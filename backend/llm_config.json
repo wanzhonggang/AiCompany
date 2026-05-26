@@ -1,0 +1,16 @@
+{
+  "providers": [
+    {
+      "name": "deepseek",
+      "display_name": "DeepSeek",
+      "base_url": "https://api.deepseek.com",
+      "api_key": "sk-a398268a82354acdb535046b0c0fb2c3",
+      "models": [
+        {"name": "deepseek-chat", "display_name": "DeepSeek-V3", "description": "通用对话，高效快速"},
+        {"name": "deepseek-reasoner", "display_name": "DeepSeek-R1", "description": "深度推理，适合复杂分析任务"}
+      ]
+    }
+  ],
+  "default_provider": "deepseek",
+  "default_model": "deepseek-chat"
+}
