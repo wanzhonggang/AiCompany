@@ -21,21 +21,63 @@ class WebSearchTool(BaseTool):
 
     async def execute(self, query: str = "", **kwargs) -> ToolResult:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            import re
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            }
+
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+                # Try DuckDuckGo first (faster, cleaner HTML)
                 resp = await client.get(
-                    "https://api.duckduckgo.com/",
-                    params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"}
+                    "https://html.duckduckgo.com/html/",
+                    params={"q": query},
+                    headers=headers,
                 )
-                data = resp.json()
-                results = []
-                if data.get("AbstractText"):
-                    results.append(f"📌 {data['AbstractText']}")
-                if data.get("AbstractURL"):
-                    results.append(f"🔗 {data['AbstractURL']}")
-                for related in data.get("RelatedTopics", [])[:5]:
-                    if isinstance(related, dict) and related.get("Text"):
-                        results.append(f"• {related['Text']}")
-                output = "\n".join(results) if results else f"No results found for: {query}"
+
+                # If DuckDuckGo fails (blocked in China), fall back to Bing
+                if resp.status_code != 200:
+                    resp = await client.get(
+                        "https://www.bing.com/search",
+                        params={"q": query, "setlang": "zh-Hans"},
+                        headers=headers,
+                    )
+                    if resp.status_code != 200:
+                        return ToolResult(success=False, error=f"Search unavailable (HTTP {resp.status_code})")
+
+                    text = resp.text
+                    results: list[str] = []
+                    # Bing results: <li class="b_algo"> each contains <h2><a href="url">title</a></h2> and <p>snippet</p>
+                    blocks = re.split(r'<li class="b_algo"', text)
+                    for block in blocks[1:]:
+                        link_m = re.search(r'<a[^>]*href="(https?://[^"]+)"[^>]*>((?:(?!</a>).)+)</a>', block, re.DOTALL)
+                        snippet_m = re.search(r'<p[^>]*>((?:(?!</p>).)+?)</p>', block, re.DOTALL)
+                        if link_m:
+                            url = link_m.group(1)
+                            title = re.sub(r'<[^>]+>', '', link_m.group(2)).strip()
+                            snippet = re.sub(r'<[^>]+>', '', snippet_m.group(1)).strip() if snippet_m else ""
+                            snippet = re.sub(r'\s+', ' ', snippet)
+                            results.append(f"🔗 {title}\n   {snippet}\n   {url}")
+                        if len(results) >= 8:
+                            break
+                else:
+                    # DuckDuckGo results
+                    text = resp.text
+                    results = []
+                    blocks = re.split(r'<div class="result results_links', text)
+                    for block in blocks[1:]:
+                        title_m = re.search(r'class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]+)<', block)
+                        snippet_m = re.search(r'class="result__snippet"[^>]*>\s*(.*?)\s*</a>', block, re.DOTALL)
+                        if title_m:
+                            url = title_m.group(1)
+                            title = title_m.group(2).strip()
+                            snippet = re.sub(r'<[^>]+>', '', snippet_m.group(1)).strip() if snippet_m else ""
+                            results.append(f"🔗 {title}\n   {snippet}\n   {url}")
+                        if len(results) >= 8:
+                            break
+
+                output = "\n\n".join(results) if results else f"No search results found for: {query}"
                 return ToolResult(success=True, data=output)
         except Exception as e:
             return ToolResult(success=False, error=str(e))

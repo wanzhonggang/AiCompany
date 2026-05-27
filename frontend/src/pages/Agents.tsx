@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { getAgents, deleteAgent, createAgent, getLLMConfig, type Agent, type LLMConfig } from '../api/client'
+import { getAgents, deleteAgent, createAgent, updateAgent, getLLMConfig, type Agent, type LLMConfig } from '../api/client'
 
 const AVATAR_COLORS = [
   "#6366f1","#8b5cf6","#06b6d4","#10b981","#f59e0b",
@@ -26,15 +26,17 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
   const [formSkills, setFormSkills] = useState('')
   const [formPrompt, setFormPrompt] = useState('')
   const [formColor, setFormColor] = useState(AVATAR_COLORS[0])
-  const [formProvider, setFormProvider] = useState('deepseek')
-  const [formModel, setFormModel] = useState('deepseek-chat')
+  const [formProvider, setFormProvider] = useState('')
+  const [formModel, setFormModel] = useState('')
   const [llmConfig, setLLMConfig] = useState<LLMConfig | null>(null)
 
   const loadLLMConfig = useCallback(async () => {
     try {
       const cfg = await getLLMConfig()
       setLLMConfig(cfg)
-    } catch { /* keep defaults */ }
+      setFormProvider(cfg.default_provider)
+      setFormModel(cfg.default_model)
+    } catch { /* no-op, wait for backend */ }
   }, [])
 
   const load = async () => {
@@ -53,8 +55,8 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
     setEditing(null)
     setFormName(''); setFormRole(''); setFormDept('')
     setFormSkills(''); setFormPrompt('')
-    setFormProvider(llmConfig?.default_provider || 'deepseek')
-    setFormModel(llmConfig?.default_model || 'deepseek-chat')
+    setFormProvider(llmConfig?.default_provider || '')
+    setFormModel(llmConfig?.default_model || '')
     setFormColor(AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)])
     setShowForm(true)
   }
@@ -64,8 +66,8 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
     setFormName(a.name); setFormRole(a.role); setFormDept(a.department)
     setFormSkills(a.skills.join(', ')); setFormPrompt(a.system_prompt)
     setFormColor(a.avatar_color)
-    setFormProvider(a.provider || 'deepseek')
-    setFormModel(a.model_name || 'deepseek-chat')
+    setFormProvider(a.provider || llmConfig?.default_provider || '')
+    setFormModel(a.model_name || llmConfig?.default_model || '')
     setShowForm(true)
   }
 
@@ -75,7 +77,6 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
 
     try {
       if (editing) {
-        const { updateAgent } = await import('../api/client')
         await updateAgent(editing.id, {
           name: formName, role: formRole, department: formDept,
           skills: formSkills.split(',').map(s => s.trim()).filter(Boolean),

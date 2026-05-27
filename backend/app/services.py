@@ -5,6 +5,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from .config import get_default_model
 from .models import Agent, Task, Conversation, Message, AgentToolBinding
 from .schemas import AgentCreate, AgentUpdate, TaskCreate
 from .agent_runtime.core import AgentRuntime, AgentConfig, AgentEvent
@@ -42,7 +43,7 @@ async def create_agent(db: AsyncSession, data: AgentCreate) -> Agent:
         avatar_color=data.avatar_color,
         provider=data.provider,
         max_iterations=data.max_iterations,
-        model_name=data.model_name,
+        model_name=data.model_name or get_default_model(),
     )
     for tool in BUILTIN_TOOLS:
         binding = AgentToolBinding(agent_id=agent.id, tool_name=tool.name, enabled=True)
@@ -105,24 +106,36 @@ async def get_conversation(db: AsyncSession, conv_id: str) -> Optional[Conversat
 
 
 async def get_conversation_messages(db: AsyncSession, conv_id: str) -> list[dict]:
-    """Load conversation history in OpenAI-compatible format."""
+    """Load conversation history in OpenAI-compatible format.
+
+    Ensures every tool message immediately follows its parent assistant message
+    with matching tool_calls, regardless of DB insertion order.
+    """
     result = await db.execute(
         select(Message).where(Message.conversation_id == conv_id).order_by(Message.created_at)
     )
-    msgs = result.scalars().all()
-    history = []
+    msgs = list(result.scalars().all())
+
+    # Build index: tool_call_id → tool message
+    tool_msgs_by_call_id: dict[str, Message] = {}
+    for m in msgs:
+        if m.role == "tool" and m.tool_call_id:
+            tool_msgs_by_call_id[m.tool_call_id] = m
+
+    history: list[dict] = []
+    seen_tool_call_ids: set[str] = set()
+
     for m in msgs:
         if m.role == "tool":
-            history.append({
-                "role": "tool",
-                "tool_call_id": m.tool_call_id or "",
-                "content": m.content,
-            })
-        elif m.tool_calls:
+            # Only emit tool messages when reached via their parent assistant
+            continue
+
+        if m.role == "assistant" and m.tool_calls:
             openai_tool_calls = []
             for tc in m.tool_calls:
+                tc_id = tc["id"]
                 openai_tool_calls.append({
-                    "id": tc["id"],
+                    "id": tc_id,
                     "type": "function",
                     "function": {
                         "name": tc["name"],
@@ -134,8 +147,20 @@ async def get_conversation_messages(db: AsyncSession, conv_id: str) -> list[dict
                 "content": m.content or None,
                 "tool_calls": openai_tool_calls,
             })
+            # Emit matching tool messages immediately after
+            for tc in m.tool_calls:
+                tc_id = tc["id"]
+                tool_msg = tool_msgs_by_call_id.get(tc_id)
+                if tool_msg and tc_id not in seen_tool_call_ids:
+                    seen_tool_call_ids.add(tc_id)
+                    history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_msg.tool_call_id or "",
+                        "content": tool_msg.content,
+                    })
         else:
             history.append({"role": m.role, "content": m.content})
+
     return history
 
 
@@ -181,7 +206,6 @@ async def chat_with_agent(
 
     # Stream response
     full_response = ""
-    tool_calls_stored = []
     final_data = {}
 
     async for event in runtime.run_stream(message, history):
@@ -191,16 +215,26 @@ async def chat_with_agent(
             pass  # tool usage is tracked in the done event
         elif event.type == "tool_result":
             pass  # tool results are saved below from done event data
-        elif event.type == "done":
-            final_data = event.data
+        elif event.type == "tool_cycle":
             # Extract tool calls for DB storage
+            tool_calls_stored = []
             for tc in event.data.get("tool_calls", []):
                 tool_calls_stored.append({
                     "id": tc["id"],
                     "name": tc["name"],
                     "input": tc["input"],
                 })
-                # Save tool result as a message
+
+            if tool_calls_stored:
+                assistant_tool_msg = Message(
+                    conversation_id=conv.id,
+                    role="assistant",
+                    content=event.data.get("assistant_content") or None,
+                    tool_calls=tool_calls_stored,
+                )
+                db.add(assistant_tool_msg)
+
+            for tc in event.data.get("tool_calls", []):
                 tool_msg = Message(
                     conversation_id=conv.id,
                     role="tool",
@@ -208,6 +242,8 @@ async def chat_with_agent(
                     tool_call_id=tc["id"],
                 )
                 db.add(tool_msg)
+        elif event.type == "done":
+            final_data = event.data
         elif event.type == "error":
             full_response = f"错误: {event.content}"
             yield event
@@ -225,7 +261,6 @@ async def chat_with_agent(
         conversation_id=conv.id,
         role="assistant",
         content=full_response,
-        tool_calls=tool_calls_stored if tool_calls_stored else None,
         token_count=final_data.get("tokens", 0),
     )
     db.add(assistant_msg)

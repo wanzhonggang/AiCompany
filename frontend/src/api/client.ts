@@ -171,6 +171,20 @@ export async function getConversations(agentId: string): Promise<Conversation[]>
   return r.json();
 }
 
+export interface ChatMessageHistory {
+  id: string;
+  role: string;
+  content: string;
+  tool_call_id: string | null;
+  tool_calls: Array<{ id: string; name: string; input: Record<string, unknown> }> | null;
+  created_at: string | null;
+}
+
+export async function getMessages(convId: string): Promise<ChatMessageHistory[]> {
+  const r = await fetch(`${BASE}/chat/messages/${convId}`);
+  return r.json();
+}
+
 // ---- LLM Config ----
 export async function getLLMConfig(): Promise<LLMConfig> {
   const r = await fetch(`${BASE}/llm/providers`);

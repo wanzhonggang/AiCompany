@@ -13,7 +13,7 @@ class AgentCreate(BaseModel):
     avatar_color: str = "#06b6d4"
     provider: str = "deepseek"
     max_iterations: int = 25
-    model_name: str = "deepseek-chat"
+    model_name: str = ""
 
 
 class AgentUpdate(BaseModel):

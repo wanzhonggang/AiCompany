@@ -36,6 +36,11 @@ class AgentRuntime:
         provider = get_provider(config.provider)
         if not provider:
             raise ValueError(f"Unknown LLM provider: {config.provider}")
+        if not provider.get("api_key"):
+            raise ValueError(
+                f"Missing API key for provider: {config.provider}. "
+                f"Set {provider.get('api_key_env') or config.provider.upper() + '_API_KEY'} in backend/.env."
+            )
         self.client = AsyncOpenAI(
             api_key=provider["api_key"],
             base_url=provider["base_url"],
@@ -84,6 +89,7 @@ class AgentRuntime:
         tools = self._build_tools()
         iteration = 0
         total_tokens = 0
+        all_tool_calls_for_event: list[dict] = []
 
         while iteration < self.config.max_iterations:
             iteration += 1
@@ -139,7 +145,11 @@ class AgentRuntime:
                 yield AgentEvent(
                     type="done",
                     content="任务完成",
-                    data={"iterations": iteration, "tokens": total_tokens},
+                    data={
+                        "iterations": iteration,
+                        "tokens": total_tokens,
+                        "tool_calls": all_tool_calls_for_event,
+                    },
                 )
                 break
 
@@ -233,24 +243,30 @@ class AgentRuntime:
                     "output": result_text[:1000],
                 })
 
-            # ── Done event includes full tool call details ──
+            all_tool_calls_for_event.extend(tool_results_for_event)
             yield AgentEvent(
-                type="done",
+                type="tool_cycle",
                 content="工具执行完成",
                 data={
                     "iterations": iteration,
                     "tokens": total_tokens,
+                    "assistant_content": content,
                     "tool_calls": tool_results_for_event,
                 },
             )
-            return
+            continue
 
         else:
             # Max iterations reached
             yield AgentEvent(
                 type="done",
                 content=f"达到最大迭代次数 ({self.config.max_iterations})，已停止。",
-                data={"iterations": iteration, "tokens": total_tokens, "max_reached": True},
+                data={
+                    "iterations": iteration,
+                    "tokens": total_tokens,
+                    "max_reached": True,
+                    "tool_calls": all_tool_calls_for_event,
+                },
             )
 
     async def run(

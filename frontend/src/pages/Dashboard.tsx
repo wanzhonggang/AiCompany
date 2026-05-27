@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getStats, getAgents, type Stats, type Agent } from '../api/client'
+import { AgentDeskRow } from '../components/AgentDesk'
 
 const STATUS_ICONS: Record<string, { icon: string; cls: string }> = {
   total: { icon: '👥', cls: 'rgba(99,102,241,0.2)' },
@@ -58,6 +59,8 @@ export function Dashboard({ showToast }: { showToast: (msg: string, type: string
           </div>
         ))}
       </div>
+
+      <AgentDeskRow agents={agents} />
 
       <div style={{ marginBottom: 16 }}>
         <h2 style={{ fontSize: '1.1rem', marginBottom: 12 }}>AI 员工概览</h2>

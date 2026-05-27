@@ -54,20 +54,30 @@ async def chat_with_agent(agent_id: str, data: ChatRequest):
             runtime = AgentRuntime(config)
 
             full_response = ""
-            tool_calls_stored = []
             final_data = {}
 
             async for event in runtime.run_stream(data.message, history):
                 if event.type == "text_delta":
                     full_response += event.content
-                elif event.type == "done":
-                    final_data = event.data
+                elif event.type == "tool_cycle":
+                    tool_calls_stored = []
                     for tc in event.data.get("tool_calls", []):
                         tool_calls_stored.append({
                             "id": tc["id"],
                             "name": tc["name"],
                             "input": tc["input"],
                         })
+
+                    if tool_calls_stored:
+                        assistant_tool_msg = Message(
+                            conversation_id=conv.id,
+                            role="assistant",
+                            content=event.data.get("assistant_content") or None,
+                            tool_calls=tool_calls_stored,
+                        )
+                        db.add(assistant_tool_msg)
+
+                    for tc in event.data.get("tool_calls", []):
                         tool_msg = Message(
                             conversation_id=conv.id,
                             role="tool",
@@ -75,6 +85,9 @@ async def chat_with_agent(agent_id: str, data: ChatRequest):
                             tool_call_id=tc["id"],
                         )
                         db.add(tool_msg)
+                elif event.type == "done":
+                    final_data = event.data
+                    final_data["conversation_id"] = conv.id
                 elif event.type == "error":
                     yield _sse("error", event.content)
                     full_response = f"错误: {event.content}"
@@ -82,18 +95,23 @@ async def chat_with_agent(agent_id: str, data: ChatRequest):
 
                 yield _sse(event.type, event.content, event.data)
 
+            # Auto-title: use first user message truncated to 30 chars
+            if conv.title == "新对话":
+                conv.title = data.message[:30] + ("..." if len(data.message) > 30 else "")
+
             agent.status = "idle"
             agent.current_task = None
             agent.updated_at = datetime.utcnow()
 
+            # Save assistant message FIRST (tool messages must follow it)
             assistant_msg = Message(
                 conversation_id=conv.id,
                 role="assistant",
                 content=full_response,
-                tool_calls=tool_calls_stored if tool_calls_stored else None,
                 token_count=final_data.get("tokens", 0),
             )
             db.add(assistant_msg)
+
             conv.updated_at = datetime.utcnow()
             await db.commit()
 
@@ -106,6 +124,16 @@ async def chat_with_agent(agent_id: str, data: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.patch("/conversations/{conv_id}/rename")
+async def rename_conversation(conv_id: str, data: dict, db: AsyncSession = Depends(get_db)):
+    conv = await get_conversation(db, conv_id)
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    conv.title = data.get("title", conv.title)
+    await db.commit()
+    return {"ok": True}
 
 
 @router.get("/conversations/{agent_id}")
@@ -123,3 +151,26 @@ async def list_conversations(agent_id: str, db: AsyncSession = Depends(get_db)):
         {"id": c.id, "title": c.title, "status": c.status, "created_at": c.created_at.isoformat()}
         for c in convs
     ]
+
+
+@router.get("/messages/{conv_id}")
+async def get_messages(conv_id: str, db: AsyncSession = Depends(get_db)):
+    """Load all messages for a conversation, in chat display format."""
+    from sqlalchemy import select
+    result = await db.execute(
+        select(Message).where(Message.conversation_id == conv_id).order_by(Message.created_at)
+    )
+    msgs = result.scalars().all()
+    out = []
+    for m in msgs:
+        item: dict = {
+            "id": m.id,
+            "role": m.role,
+            "content": m.content,
+            "tool_call_id": m.tool_call_id,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+        }
+        if m.tool_calls:
+            item["tool_calls"] = m.tool_calls
+        out.append(item)
+    return out

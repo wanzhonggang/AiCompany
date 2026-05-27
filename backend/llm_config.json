@@ -4,13 +4,24 @@
       "name": "deepseek",
       "display_name": "DeepSeek",
       "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
       "api_key": "sk-a398268a82354acdb535046b0c0fb2c3",
       "models": [
-        {"name": "deepseek-chat", "display_name": "DeepSeek-V3", "description": "通用对话，高效快速"},
-        {"name": "deepseek-reasoner", "display_name": "DeepSeek-R1", "description": "深度推理，适合复杂分析任务"}
+        {"name": "deepseek-v4-pro", "display_name": "DeepSeek V4 Pro", "description": "DeepSeek 最新旗舰模型"}
       ]
-    }
+    },
+     {
+        "name": "zhipu",
+        "display_name": "智谱",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "api_key_env": "ZHIPU_API_KEY",
+        "api_key": "d62f2fe87fd848ad8832ebe167dd49e9.OkR2x9OeXjPwB0A4",
+        "models": [
+          {"name": "glm-4-plus", "display_name": "GLM-4-Plus", "description": "智谱最新旗舰模型"},
+          {"name": "glm-4-flash", "display_name": "GLM-4-Flash", "description": "轻量快速版"}
+        ]
+      }
   ],
   "default_provider": "deepseek",
-  "default_model": "deepseek-chat"
+  "default_model": "deepseek-v4-pro"
 }

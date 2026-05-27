@@ -1,16 +1,27 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { getAgent, chatWithAgent, getConversations, type Agent, type Conversation } from '../api/client'
+import { getAgent, chatWithAgent, getConversations, getMessages, type Agent, type Conversation, type ChatMessageHistory } from '../api/client'
 
 interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'tool' | 'error' | 'thinking'
   content: string
   data?: Record<string, unknown>
+  toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>
 }
 
 const STATUS_MAP: Record<string, string> = {
   idle: '空闲中', working: '工作中', blocked: '阻塞中', completed: '已完成',
+}
+
+const BASE = '/api';
+
+async function renameConversation(convId: string, title: string): Promise<void> {
+  await fetch(`${BASE}/chat/conversations/${convId}/rename`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
 }
 
 export function AgentChat({ showToast }: { showToast: (msg: string, type: string) => void }) {
@@ -22,6 +33,8 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [convs, setConvs] = useState<Conversation[]>([])
   const [loading, setLoading] = useState(true)
+  const [editingTitle, setEditingTitle] = useState<string | null>(null)
+  const [titleInput, setTitleInput] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -40,6 +53,21 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
   }, [id])
 
   useEffect(() => { loadAgent() }, [loadAgent])
+
+  const loadMessages = useCallback(async (convId: string) => {
+    try {
+      const history = await getMessages(convId)
+      const msgs: ChatMessage[] = history.map((m: ChatMessageHistory) => ({
+        id: m.id,
+        role: m.role as ChatMessage['role'],
+        content: m.content,
+        toolCalls: m.tool_calls || undefined,
+      }))
+      setMessages(msgs)
+    } catch {
+      showToast('加载对话记录失败', 'error')
+    }
+  }, [showToast])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -95,6 +123,8 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
               const { conversation_id } = data.data as Record<string, unknown>
               if (conversation_id && !conversationId) {
                 setConversationId(conversation_id as string)
+                // Reload conversation list to show the new auto-titled conversation
+                getConversations(id!).then(setConvs).catch(() => {})
               }
             }
             // Remove empty assistant message if somehow empty
@@ -158,20 +188,63 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
           </div>
         </div>
         {convs.length > 0 && (
-          <select
-            className="form-select"
-            style={{ width: 200 }}
-            value={conversationId || ''}
-            onChange={e => {
-              setConversationId(e.target.value || null)
-              setMessages([])
-            }}
-          >
-            <option value="">新对话</option>
-            {convs.map(c => (
-              <option key={c.id} value={c.id}>{c.title} - {new Date(c.created_at).toLocaleDateString('zh-CN')}</option>
-            ))}
-          </select>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select
+              className="form-select"
+              style={{ width: 200 }}
+              value={conversationId || ''}
+              onChange={async e => {
+                const cid = e.target.value || null
+                setConversationId(cid)
+                if (cid) {
+                  setMessages([])
+                  await loadMessages(cid)
+                } else {
+                  setMessages([])
+                }
+              }}
+            >
+              <option value="">+ 新对话</option>
+              {convs.map(c => (
+                <option key={c.id} value={c.id}>{c.title} — {new Date(c.created_at).toLocaleDateString('zh-CN')}</option>
+              ))}
+            </select>
+            {conversationId && (
+              <button
+                className="btn btn-ghost btn-sm"
+                title="重命名对话"
+                onClick={() => {
+                  const current = convs.find(c => c.id === conversationId)
+                  setEditingTitle(conversationId)
+                  setTitleInput(current?.title || '')
+                }}
+              >✎</button>
+            )}
+          </div>
+        )}
+        {editingTitle && (
+          <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setEditingTitle(null) }}>
+            <div className="modal-content" style={{ maxWidth: 380 }}>
+              <div className="modal-header">
+                <h3 className="modal-title">重命名对话</h3>
+                <button className="btn btn-ghost btn-sm" onClick={() => setEditingTitle(null)}>✕</button>
+              </div>
+              <form onSubmit={async e => {
+                e.preventDefault()
+                if (titleInput.trim() && editingTitle) {
+                  await renameConversation(editingTitle, titleInput.trim())
+                  setConvs(prev => prev.map(c => c.id === editingTitle ? { ...c, title: titleInput.trim() } : c))
+                  setEditingTitle(null)
+                }
+              }}>
+                <input className="form-input" value={titleInput} onChange={e => setTitleInput(e.target.value)} placeholder="对话名称" autoFocus />
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                  <button type="button" className="btn btn-secondary" onClick={() => setEditingTitle(null)}>取消</button>
+                  <button type="submit" className="btn btn-primary">保存</button>
+                </div>
+              </form>
+            </div>
+          </div>
         )}
       </div>
 

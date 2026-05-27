@@ -40,7 +40,7 @@ class Agent(Base):
     avatar_color = Column(String(7), default="#06b6d4")
     provider = Column(String(50), default="deepseek")
     max_iterations = Column(Integer, default=25)
-    model_name = Column(String(50), default="deepseek-chat")
+    model_name = Column(String(50), default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
