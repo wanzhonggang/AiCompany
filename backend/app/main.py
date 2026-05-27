@@ -11,7 +11,7 @@ from .config import get_provider, get_providers_safe, load_llm_config, save_llm_
 from .database import init_db, async_session
 from .routers import agents, chat, tools, tasks, departments
 from .models import Agent, AgentToolBinding, ToolDefinition
-from .services import BUILTIN_TOOLS, ensure_department, execute_task, get_due_scheduled_tasks
+from .services import BUILTIN_TOOLS, ensure_department, execute_task, get_assigned_immediate_tasks, get_due_scheduled_tasks
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,7 +36,8 @@ async def scheduled_task_loop():
         try:
             async with async_session() as db:
                 due_tasks = await get_due_scheduled_tasks(db)
-            for task in due_tasks:
+                assigned_tasks = await get_assigned_immediate_tasks(db)
+            for task in [*due_tasks, *assigned_tasks]:
                 asyncio.create_task(execute_task(task.id))
         except Exception as e:
             logger.warning("Scheduled task loop failed: %s", e)

@@ -47,6 +47,14 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   border-bottom: 1px solid var(--border-color); margin-bottom: 8px;
   display: flex; align-items: center; gap: 8px;
 }
+.brand-logo {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(6,182,212,0.22);
+}
 .sidebar-nav { display: flex; flex-direction: column; gap: 2px; }
 .sidebar-link {
   display: flex; align-items: center; gap: 10px; padding: 10px 12px;

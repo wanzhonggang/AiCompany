@@ -672,6 +672,17 @@ async def get_due_scheduled_tasks(db: AsyncSession) -> list[Task]:
     return list(result.scalars().all())
 
 
+async def get_assigned_immediate_tasks(db: AsyncSession) -> list[Task]:
+    result = await db.execute(
+        select(Task)
+        .where(Task.task_type == "immediate")
+        .where(Task.status == TaskStatus.ASSIGNED.value)
+        .order_by(Task.assigned_at.asc())
+        .limit(10)
+    )
+    return list(result.scalars().all())
+
+
 async def get_agent_stats(db: AsyncSession) -> dict:
     result = await db.execute(select(Agent.status, func.count(Agent.id)).group_by(Agent.status))
     counts = {row[0]: row[1] for row in result.all()}

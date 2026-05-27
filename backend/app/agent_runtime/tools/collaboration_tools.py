@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from sqlalchemy import select
 
@@ -101,10 +102,13 @@ class DelegateTaskTool(BaseTool):
             await db.commit()
             await db.refresh(task)
 
+            from ...services import execute_task
+            asyncio.create_task(execute_task(task.id))
+
             return ToolResult(
                 success=True,
                 data={
-                    "message": "内部协作任务已创建",
+                    "message": "内部协作任务已创建并开始执行",
                     "task_id": task.id,
                     "target_agent_id": target.id,
                     "target_agent_name": target.name,

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 import threading
 from pathlib import Path
@@ -19,6 +20,7 @@ class BrowserSession:
     def __init__(self):
         self.playwright: Any = None
         self.browser: Any = None
+        self.context: Any = None
         self.page: Any = None
         self.lock = threading.RLock()
 
@@ -39,19 +41,71 @@ class BrowserSession:
         if self.playwright is None:
             self.playwright = sync_playwright().start()
 
-        if self.browser is None or not self.browser.is_connected():
-            self.browser = self.playwright.chromium.launch(headless=headless)
+        if self.context is None:
+            channel = self._preferred_browser_channel()
+            user_data_dir = self._profile_dir(channel or "chromium")
+            launch_kwargs = {
+                "headless": headless,
+                "viewport": {"width": 1366, "height": 900},
+                "args": ["--start-maximized"],
+            }
+            if channel:
+                launch_kwargs["channel"] = channel
+            try:
+                self.context = self.playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(user_data_dir),
+                    **launch_kwargs,
+                )
+            except Exception:
+                self.context = self.playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(self._profile_dir("chromium")),
+                    headless=headless,
+                    viewport={"width": 1366, "height": 900},
+                    args=["--start-maximized"],
+                )
 
         if self.page is None or self.page.is_closed():
-            self.page = self.browser.new_page(viewport={"width": 1366, "height": 900})
+            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
 
         return self.page
 
+    def _preferred_browser_channel(self) -> str | None:
+        configured = os.getenv("AI_EMPLOYEE_BROWSER", "").strip().lower()
+        if configured in {"msedge", "chrome"}:
+            return configured
+
+        if sys.platform == "win32":
+            edge_paths = [
+                Path(os.environ.get("PROGRAMFILES", "")) / "Microsoft/Edge/Application/msedge.exe",
+                Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Microsoft/Edge/Application/msedge.exe",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft/Edge/Application/msedge.exe",
+            ]
+            if any(path.exists() for path in edge_paths):
+                return "msedge"
+
+            chrome_paths = [
+                Path(os.environ.get("PROGRAMFILES", "")) / "Google/Chrome/Application/chrome.exe",
+                Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Google/Chrome/Application/chrome.exe",
+                Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
+            ]
+            if any(path.exists() for path in chrome_paths):
+                return "chrome"
+
+        return None
+
+    def _profile_dir(self, browser_name: str) -> Path:
+        base = Path.cwd() / "data" / "browser_profiles" / browser_name
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
     def close(self):
+        if self.context is not None:
+            self.context.close()
+            self.context = None
+            self.page = None
         if self.browser is not None:
             self.browser.close()
             self.browser = None
-            self.page = None
         if self.playwright is not None:
             self.playwright.stop()
             self.playwright = None
@@ -89,7 +143,8 @@ class BrowserOpenTool(BaseTool):
     name = "browser_open"
     category = "browser"
     description = (
-        "Open a real Chromium browser window with Playwright and navigate to a URL. "
+        "Open a visible real desktop browser window on this Windows computer and navigate to a URL. "
+        "Prefer Microsoft Edge, then Google Chrome, then Playwright Chromium. "
         "Use this when the user asks to open a browser, open Baidu/Google/Bing, navigate to a website, "
         "visit a URL, inspect an interactive page, or do anything that requires a visible browser."
     )

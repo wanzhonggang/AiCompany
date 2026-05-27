@@ -21,7 +21,10 @@ function Sidebar() {
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-brand">🤖 AI 员工平台</div>
+      <div className="sidebar-brand">
+        <img className="brand-logo" src="/logo.svg" alt="AI 员工平台" />
+        <span>AI 员工平台</span>
+      </div>
       <nav className="sidebar-nav">
         {links.map(l => (
           <Link
