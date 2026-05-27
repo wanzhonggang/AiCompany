@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getStats, getAgents, type Stats, type Agent } from '../api/client'
-import { AgentDeskRow } from '../components/AgentDesk'
 
 const STATUS_ICONS: Record<string, { icon: string; cls: string }> = {
   total: { icon: '👥', cls: 'rgba(99,102,241,0.2)' },
@@ -16,19 +15,23 @@ export function Dashboard({ showToast }: { showToast: (msg: string, type: string
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
 
-  const load = async () => {
+  const load = useCallback(async (showError = true) => {
     try {
       const [s, a] = await Promise.all([getStats(), getAgents()])
       setStats(s)
       setAgents(a)
     } catch {
-      showToast('加载数据失败，请确保后端已启动', 'error')
+      if (showError) showToast('加载数据失败，请确保后端已启动', 'error')
     } finally {
       setLoading(false)
     }
-  }
+  }, [showToast])
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    const timer = window.setInterval(() => load(false), 3000)
+    return () => window.clearInterval(timer)
+  }, [load])
 
   if (loading) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>加载中...</div>
 
@@ -60,8 +63,6 @@ export function Dashboard({ showToast }: { showToast: (msg: string, type: string
         ))}
       </div>
 
-      <AgentDeskRow agents={agents} />
-
       <div style={{ marginBottom: 16 }}>
         <h2 style={{ fontSize: '1.1rem', marginBottom: 12 }}>AI 员工概览</h2>
         <div className="agent-grid">
@@ -87,7 +88,7 @@ export function Dashboard({ showToast }: { showToast: (msg: string, type: string
                 {a.skills.slice(0, 4).map(s => <span key={s} className="skill-tag">{s}</span>)}
               </div>
               <div className="card-actions">
-                <Link to={`/agents/${a.id}/chat`} className="btn btn-primary btn-sm">💬 对话</Link>
+                <Link to={`/agents/${a.id}/chat`} className="btn btn-primary btn-sm">工作台</Link>
                 <Link to="/agents" className="btn btn-ghost btn-sm">查看全部 →</Link>
               </div>
             </div>

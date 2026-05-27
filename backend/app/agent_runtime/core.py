@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI
 
-from ..config import settings, get_provider
+from ..config import get_provider
 from .tools.base import BaseTool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ class AgentConfig:
 
 @dataclass
 class AgentEvent:
-    type: str  # "text_delta", "tool_use", "tool_result", "thinking", "done", "error"
+    type: str  # "text_delta", "tool_use", "tool_result", "tool_cycle", "thinking", "done", "error"
     content: str = ""
     data: dict = field(default_factory=dict)
 
@@ -45,6 +45,7 @@ class AgentRuntime:
             api_key=provider["api_key"],
             base_url=provider["base_url"],
         )
+        self.extra_body = provider.get("extra_body") or None
 
     def _build_tools(self) -> list[dict] | None:
         if not self.config.tools:
@@ -67,6 +68,30 @@ class AgentRuntime:
                 return tool
         return None
 
+    def _build_system_prompt(self) -> str:
+        prompt = self.config.system_prompt.strip()
+        tool_names = {tool.name for tool in self.config.tools}
+
+        if tool_names:
+            prompt += (
+                "\n\n工具使用规则：\n"
+                "- 你已经具备系统提供的工具能力。用户要求你读取文件、写文件、搜索网页、打开网页、操作浏览器、点击页面、输入内容、截图时，优先调用对应工具完成，不要只给口头步骤。\n"
+                "- 不要说“我无法打开浏览器”“我不能控制桌面/浏览器”，除非对应工具调用失败，并且要把失败原因告诉用户。\n"
+                "- 如果用户让你把文件放到桌面，使用 Desktop/文件名 或 桌面/文件名 路径。\n"
+            )
+
+        if "browser_open" in tool_names:
+            prompt += (
+                "\n浏览器工具规则：\n"
+                "- 用户说“打开浏览器”“打开网页”“访问网站”“跳转到某网站”“打开百度/谷歌/Bing”等，必须调用 browser_open。\n"
+                "- 常见网站可直接补全 URL，例如百度使用 https://www.baidu.com，Bing 使用 https://www.bing.com，Google 使用 https://www.google.com。\n"
+                "- 打开页面后需要查看当前页面内容时，调用 browser_snapshot；需要点击时调用 browser_click；需要输入时调用 browser_type。\n"
+                "- 如果 Playwright 或 Chromium 未安装，工具会返回安装提示，你要把提示原样转告用户，而不是改口说自己没有能力。\n"
+                "- 旧对话里如果出现过“不能打开浏览器”的说法，应忽略；当前会话以后以这些浏览器工具为准。\n"
+            )
+
+        return prompt
+
     async def run_stream(
         self,
         user_message: str,
@@ -75,7 +100,7 @@ class AgentRuntime:
         messages: list[dict] = []
 
         # System prompt
-        messages.append({"role": "system", "content": self.config.system_prompt})
+        messages.append({"role": "system", "content": self._build_system_prompt()})
 
         # Conversation history (OpenAI format)
         if history:
@@ -97,18 +122,22 @@ class AgentRuntime:
 
             # ── Step 1: Call LLM with streaming ──
             try:
-                stream = await self.client.chat.completions.create(
-                    model=self.config.model_name,
-                    messages=messages,
-                    tools=tools,
-                    stream=True,
-                )
+                request_kwargs = {
+                    "model": self.config.model_name,
+                    "messages": messages,
+                    "tools": tools,
+                    "stream": True,
+                }
+                if self.extra_body:
+                    request_kwargs["extra_body"] = self.extra_body
+                stream = await self.client.chat.completions.create(**request_kwargs)
             except Exception as e:
                 logger.error(f"LLM call failed: {e}")
                 yield AgentEvent(type="error", content=f"AI 调用失败: {str(e)}")
                 break
 
             content = ""
+            reasoning_content = ""
             tool_calls: list[dict] = []
 
             async for chunk in stream:
@@ -119,6 +148,10 @@ class AgentRuntime:
                     continue
 
                 delta = chunk.choices[0].delta
+
+                reasoning_delta = getattr(delta, "reasoning_content", None)
+                if reasoning_delta:
+                    reasoning_content += reasoning_delta
 
                 if delta.content:
                     content += delta.content
@@ -177,6 +210,8 @@ class AgentRuntime:
                 "role": "assistant",
                 "content": content or None,
             }
+            if reasoning_content:
+                assistant_msg["reasoning_content"] = reasoning_content
             if serialized_calls:
                 assistant_msg["tool_calls"] = serialized_calls
             messages.append(assistant_msg)
@@ -251,6 +286,7 @@ class AgentRuntime:
                     "iterations": iteration,
                     "tokens": total_tokens,
                     "assistant_content": content,
+                    "reasoning_content": reasoning_content,
                     "tool_calls": tool_results_for_event,
                 },
             )

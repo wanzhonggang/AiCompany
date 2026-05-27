@@ -2,12 +2,14 @@ import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-do
 import { Dashboard } from './pages/Dashboard'
 import { Agents } from './pages/Agents'
 import { AgentChat } from './pages/AgentChat'
+import { Office } from './pages/Office'
 import { useState } from 'react'
 
 function Sidebar() {
   const location = useLocation()
   const links = [
     { to: '/', label: '📊 控制台', exact: true },
+    { to: '/office', label: '🏢 AI办公室', exact: false },
     { to: '/agents', label: '🤖 AI 员工', exact: false },
   ]
 
@@ -44,6 +46,7 @@ export default function App() {
         <main className="main-content">
           <Routes>
             <Route path="/" element={<Dashboard showToast={showToast} />} />
+            <Route path="/office" element={<Office showToast={showToast} />} />
             <Route path="/agents" element={<Agents showToast={showToast} />} />
             <Route path="/agents/:id/chat" element={<AgentChat showToast={showToast} />} />
           </Routes>

@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db, async_session
 from ..models import Message
-from ..schemas import ChatRequest
+from ..schemas import ChatRequest, ConversationRenameRequest
 from ..services import get_agent, get_conversation, create_conversation, get_conversation_messages, get_tools_for_agent
 from ..agent_runtime.core import AgentRuntime, AgentConfig, AgentEvent
 
@@ -29,18 +29,23 @@ async def chat_with_agent(agent_id: str, data: ChatRequest):
                 yield _sse("error", "Agent not found")
                 return
 
-            if data.conversation_id:
-                conv = await get_conversation(db, data.conversation_id)
+            conv = None
+            if data.save_conversation and data.conversation_id:
+                conv = await get_conversation(db, data.conversation_id, agent_id=agent_id)
                 if not conv:
                     yield _sse("error", "Conversation not found")
                     return
-            else:
+            elif data.save_conversation:
                 conv = await create_conversation(db, agent_id)
 
-            history = await get_conversation_messages(db, conv_id=conv.id)
+            history = await get_conversation_messages(db, conv_id=conv.id) if conv else []
 
-            user_msg = Message(conversation_id=conv.id, role="user", content=data.message)
-            db.add(user_msg)
+            if conv:
+                user_msg = Message(conversation_id=conv.id, role="user", content=data.message)
+                db.add(user_msg)
+            agent.status = "working"
+            agent.current_task = data.message[:200]
+            agent.updated_at = datetime.utcnow()
             await db.commit()
 
             tools = get_tools_for_agent(agent)
@@ -51,10 +56,19 @@ async def chat_with_agent(agent_id: str, data: ChatRequest):
                 model_name=agent.model_name,
                 tools=tools,
             )
-            runtime = AgentRuntime(config)
+            try:
+                runtime = AgentRuntime(config)
+            except Exception as e:
+                agent.status = "blocked"
+                agent.current_task = None
+                agent.updated_at = datetime.utcnow()
+                await db.commit()
+                yield _sse("error", f"Agent 初始化失败: {str(e)}")
+                return
 
             full_response = ""
             final_data = {}
+            had_error = False
 
             async for event in runtime.run_stream(data.message, history):
                 if event.type == "text_delta":
@@ -68,7 +82,7 @@ async def chat_with_agent(agent_id: str, data: ChatRequest):
                             "input": tc["input"],
                         })
 
-                    if tool_calls_stored:
+                    if tool_calls_stored and conv:
                         assistant_tool_msg = Message(
                             conversation_id=conv.id,
                             role="assistant",
@@ -77,42 +91,47 @@ async def chat_with_agent(agent_id: str, data: ChatRequest):
                         )
                         db.add(assistant_tool_msg)
 
-                    for tc in event.data.get("tool_calls", []):
-                        tool_msg = Message(
-                            conversation_id=conv.id,
-                            role="tool",
-                            content=tc.get("output", ""),
-                            tool_call_id=tc["id"],
-                        )
-                        db.add(tool_msg)
+                    if conv:
+                        for tc in event.data.get("tool_calls", []):
+                            tool_msg = Message(
+                                conversation_id=conv.id,
+                                role="tool",
+                                content=tc.get("output", ""),
+                                tool_call_id=tc["id"],
+                            )
+                            db.add(tool_msg)
+                    full_response = ""
                 elif event.type == "done":
                     final_data = event.data
-                    final_data["conversation_id"] = conv.id
+                    if conv:
+                        final_data["conversation_id"] = conv.id
                 elif event.type == "error":
                     yield _sse("error", event.content)
                     full_response = f"错误: {event.content}"
+                    had_error = True
                     break
 
                 yield _sse(event.type, event.content, event.data)
 
             # Auto-title: use first user message truncated to 30 chars
-            if conv.title == "新对话":
+            if conv and conv.title == "新对话":
                 conv.title = data.message[:30] + ("..." if len(data.message) > 30 else "")
 
-            agent.status = "idle"
+            agent.status = "blocked" if had_error else "idle"
             agent.current_task = None
             agent.updated_at = datetime.utcnow()
 
             # Save assistant message FIRST (tool messages must follow it)
-            assistant_msg = Message(
-                conversation_id=conv.id,
-                role="assistant",
-                content=full_response,
-                token_count=final_data.get("tokens", 0),
-            )
-            db.add(assistant_msg)
+            if conv:
+                assistant_msg = Message(
+                    conversation_id=conv.id,
+                    role="assistant",
+                    content=full_response,
+                    token_count=final_data.get("tokens", 0),
+                )
+                db.add(assistant_msg)
 
-            conv.updated_at = datetime.utcnow()
+                conv.updated_at = datetime.utcnow()
             await db.commit()
 
     return StreamingResponse(
@@ -127,11 +146,19 @@ async def chat_with_agent(agent_id: str, data: ChatRequest):
 
 
 @router.patch("/conversations/{conv_id}/rename")
-async def rename_conversation(conv_id: str, data: dict, db: AsyncSession = Depends(get_db)):
+async def rename_conversation(
+    conv_id: str,
+    data: ConversationRenameRequest,
+    db: AsyncSession = Depends(get_db),
+):
     conv = await get_conversation(db, conv_id)
     if not conv:
         raise HTTPException(404, "Conversation not found")
-    conv.title = data.get("title", conv.title)
+    title = data.title.strip()
+    if not title:
+        raise HTTPException(422, "Conversation title cannot be empty")
+    conv.title = title
+    conv.updated_at = datetime.utcnow()
     await db.commit()
     return {"ok": True}
 
@@ -148,7 +175,13 @@ async def list_conversations(agent_id: str, db: AsyncSession = Depends(get_db)):
     )
     convs = result.scalars().all()
     return [
-        {"id": c.id, "title": c.title, "status": c.status, "created_at": c.created_at.isoformat()}
+        {
+            "id": c.id,
+            "title": c.title,
+            "status": c.status,
+            "created_at": c.created_at.isoformat(),
+            "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+        }
         for c in convs
     ]
 

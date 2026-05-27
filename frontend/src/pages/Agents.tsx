@@ -39,17 +39,22 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
     } catch { /* no-op, wait for backend */ }
   }, [])
 
-  const load = async () => {
+  const load = useCallback(async (showError = true) => {
     try {
       setAgents(await getAgents())
     } catch {
-      showToast('加载失败', 'error')
+      if (showError) showToast('加载失败', 'error')
     } finally {
       setLoading(false)
     }
-  }
+  }, [showToast])
 
-  useEffect(() => { load(); loadLLMConfig(); }, [])
+  useEffect(() => {
+    load()
+    loadLLMConfig()
+    const timer = window.setInterval(() => load(false), 3000)
+    return () => window.clearInterval(timer)
+  }, [load, loadLLMConfig])
 
   const openCreate = () => {
     setEditing(null)
@@ -175,7 +180,7 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
                 {a.skills.map(s => <span key={s} className="skill-tag">{s}</span>)}
               </div>
               <div className="card-actions">
-                <Link to={`/agents/${a.id}/chat`} className="btn btn-primary btn-sm">💬 开始对话</Link>
+                <Link to={`/agents/${a.id}/chat`} className="btn btn-primary btn-sm">进入工作台</Link>
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', alignSelf: 'center' }}>
                   {a.tool_count} 个工具
                 </span>

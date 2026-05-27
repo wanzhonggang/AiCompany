@@ -76,19 +76,28 @@ class Task(Base):
 
     id = Column(String(12), primary_key=True, default=gen_id)
     agent_id = Column(String(12), ForeignKey("agents.id"), nullable=False)
+    conversation_id = Column(String(12), ForeignKey("conversations.id"), nullable=True)
     title = Column(String(200), nullable=False)
     description = Column(Text, default="")
     status = Column(String(20), default=TaskStatus.PENDING.value)
+    task_type = Column(String(20), default="immediate")
+    schedule = Column(String(200), nullable=True)
+    repeat = Column(String(20), default="none")
     priority = Column(String(10), default="normal")
+    save_conversation = Column(Boolean, default=True)
     output = Column(Text, nullable=True)
     error = Column(Text, nullable=True)
     iterations = Column(Integer, default=0)
     tokens_used = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
     assigned_at = Column(DateTime, default=datetime.utcnow)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    last_run_at = Column(DateTime, nullable=True)
 
     agent = relationship("Agent", back_populates="tasks")
+    conversation = relationship("Conversation")
     messages = relationship("Message", back_populates="task", cascade="all, delete-orphan")
 
 

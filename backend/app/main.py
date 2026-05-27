@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -7,7 +8,7 @@ from .config import get_providers_safe, load_llm_config
 from .database import init_db, async_session
 from .routers import agents, chat, tools, tasks
 from .models import Agent, AgentToolBinding, ToolDefinition
-from .services import BUILTIN_TOOLS
+from .services import BUILTIN_TOOLS, execute_task, get_due_scheduled_tasks
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,9 +19,25 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
     await seed_data()
+    scheduler_task = asyncio.create_task(scheduled_task_loop())
     logger.info("AI Employee Platform started")
-    yield
+    try:
+        yield
+    finally:
+        scheduler_task.cancel()
     # Shutdown
+
+
+async def scheduled_task_loop():
+    while True:
+        try:
+            async with async_session() as db:
+                due_tasks = await get_due_scheduled_tasks(db)
+            for task in due_tasks:
+                asyncio.create_task(execute_task(task.id))
+        except Exception as e:
+            logger.warning("Scheduled task loop failed: %s", e)
+        await asyncio.sleep(30)
 
 
 async def seed_data():
@@ -37,6 +54,13 @@ async def seed_data():
                     description=tool.description,
                     category=getattr(tool, "category", "general"),
                 ))
+            else:
+                result = await db.execute(select(ToolDefinition).where(ToolDefinition.name == tool.name))
+                tool_def = result.scalar_one_or_none()
+                if tool_def:
+                    tool_def.display_name = tool.name
+                    tool_def.description = tool.description
+                    tool_def.category = getattr(tool, "category", "general")
 
         result = await db.execute(select(func.count(Agent.id)))
         agent_count = result.scalar()
@@ -96,8 +120,8 @@ async def seed_data():
         existing_bindings = {
             (agent_id, tool_name)
             for agent_id, tool_name in (await db.execute(
-            select(AgentToolBinding.agent_id, AgentToolBinding.tool_name)
-        )).all()
+                select(AgentToolBinding.agent_id, AgentToolBinding.tool_name)
+            )).all()
         }
         created_bindings = 0
         for agent in agents:

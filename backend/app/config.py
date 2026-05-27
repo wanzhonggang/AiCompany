@@ -1,15 +1,18 @@
 import json
 import os
 from pathlib import Path
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 CONFIG_FILE = BASE_DIR / "llm_config.json"
 ENV_FILE = BASE_DIR / ".env"
+LOCAL_ENV_FILE = BASE_DIR / ".env.local"
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=str(ENV_FILE))
+
     secret_key: str = "change-me-in-production"
 
     @property
@@ -18,25 +21,24 @@ class Settings(BaseSettings):
         db_path = DATA_DIR / "ai_employees.db"
         return f"sqlite+aiosqlite:///{db_path}"
 
-    class Config:
-        env_file = ".env"
-
 
 settings = Settings()
 
 
 def _read_env_file() -> dict[str, str]:
-    """Read simple KEY=VALUE pairs from backend/.env without mutating os.environ."""
-    if not ENV_FILE.exists():
-        return {}
+    """Read simple KEY=VALUE pairs from backend env files without mutating os.environ."""
+    files = [ENV_FILE, LOCAL_ENV_FILE]
 
     values: dict[str, str] = {}
-    for raw_line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    for env_file in files:
+        if not env_file.exists():
             continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip('"').strip("'")
+        for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip().strip('"').strip("'")
     return values
 
 
