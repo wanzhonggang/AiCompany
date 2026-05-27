@@ -1,13 +1,13 @@
 import json
 from datetime import datetime, timedelta
 from typing import Optional, AsyncIterator
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from .config import get_default_model
+from .config import get_default_model, get_provider, load_llm_config
 from .models import Agent, Task, Conversation, Message, AgentToolBinding, TaskStatus
-from .schemas import AgentCreate, AgentUpdate, TaskCreate
+from .schemas import AgentCreate, AgentUpdate, TaskCreate, TaskUpdate
 from .agent_runtime.core import AgentRuntime, AgentConfig, AgentEvent
 from .agent_runtime.tools.file_tools import ReadFileTool, WriteFileTool, ListDirectoryTool
 from .agent_runtime.tools.web_tools import WebSearchTool, WebFetchTool
@@ -48,8 +48,26 @@ def get_tools_for_agent(agent: Agent) -> list:
     return [t for name, t in TOOL_MAP.items() if name in enabled_names]
 
 
+def _validate_agent_model(provider_name: str, model_name: str) -> None:
+    provider = get_provider(provider_name)
+    if not provider:
+        raise ValueError("LLM 供应商不存在")
+    if provider.get("status") != "ready":
+        raise ValueError("该 LLM 供应商暂未接入运行时")
+    if not provider.get("api_key"):
+        raise ValueError("该 LLM 供应商尚未配置 API Key")
+
+    config = load_llm_config()
+    provider_config = next((p for p in config.get("providers", []) if p.get("name") == provider_name), None)
+    model_names = {m.get("name") for m in (provider_config or {}).get("models", [])}
+    if model_name and model_name not in model_names:
+        raise ValueError("所选模型不属于该供应商")
+
+
 # ---- Agent CRUD ----
 async def create_agent(db: AsyncSession, data: AgentCreate) -> Agent:
+    model_name = data.model_name or get_default_model()
+    _validate_agent_model(data.provider, model_name)
     agent = Agent(
         name=data.name,
         role=data.role,
@@ -59,7 +77,7 @@ async def create_agent(db: AsyncSession, data: AgentCreate) -> Agent:
         avatar_color=data.avatar_color,
         provider=data.provider,
         max_iterations=data.max_iterations,
-        model_name=data.model_name or get_default_model(),
+        model_name=model_name,
     )
     for tool in BUILTIN_TOOLS:
         agent.tool_bindings.append(AgentToolBinding(tool_name=tool.name, enabled=True))
@@ -89,6 +107,10 @@ async def update_agent(db: AsyncSession, agent_id: str, data: AgentUpdate) -> Op
     if not agent:
         return None
     update_data = data.model_dump(exclude_unset=True)
+    next_provider = update_data.get("provider", agent.provider)
+    next_model = update_data.get("model_name", agent.model_name)
+    if "provider" in update_data or "model_name" in update_data:
+        _validate_agent_model(next_provider, next_model)
     for key, value in update_data.items():
         setattr(agent, key, value)
     agent.updated_at = datetime.utcnow()
@@ -344,6 +366,57 @@ async def get_agent_tasks(db: AsyncSession, agent_id: str) -> list[Task]:
         select(Task).where(Task.agent_id == agent_id).order_by(Task.assigned_at.desc())
     )
     return list(result.scalars().all())
+
+
+async def get_task(db: AsyncSession, task_id: str) -> Optional[Task]:
+    result = await db.execute(select(Task).where(Task.id == task_id))
+    return result.scalar_one_or_none()
+
+
+async def update_task(db: AsyncSession, task_id: str, data: TaskUpdate) -> Optional[Task]:
+    task = await get_task(db, task_id)
+    if not task:
+        return None
+    if task.status == TaskStatus.RUNNING.value:
+        raise ValueError("Running task cannot be edited")
+
+    update_data = data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(task, key, value)
+
+    if task.task_type == "immediate":
+        task.next_run_at = None
+        task.repeat = "none"
+        task.schedule = None
+    elif task.task_type == "scheduled" and task.next_run_at:
+        if task.status in {
+            TaskStatus.PENDING.value,
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.CANCELLED.value,
+        }:
+            task.status = TaskStatus.ASSIGNED.value
+
+    await db.commit()
+    await db.refresh(task)
+    return task
+
+
+async def delete_task(db: AsyncSession, task_id: str) -> bool:
+    task = await get_task(db, task_id)
+    if not task:
+        return False
+    if task.status == TaskStatus.RUNNING.value:
+        raise ValueError("Running task cannot be deleted")
+
+    await db.execute(
+        update(Message)
+        .where(Message.task_id == task_id)
+        .values(task_id=None)
+    )
+    await db.delete(task)
+    await db.commit()
+    return True
 
 
 def _task_prompt(task: Task) -> str:

@@ -78,6 +78,17 @@ class TaskCreate(BaseModel):
     next_run_at: Optional[datetime] = None
 
 
+class TaskUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=10000)
+    task_type: Optional[str] = Field(default=None, pattern="^(immediate|scheduled)$")
+    schedule: Optional[str] = Field(default=None, max_length=200)
+    repeat: Optional[str] = Field(default=None, pattern="^(none|daily|weekly)$")
+    priority: Optional[str] = Field(default=None, max_length=10)
+    save_conversation: Optional[bool] = None
+    next_run_at: Optional[datetime] = None
+
+
 class TaskResponse(BaseModel):
     id: str
     agent_id: str

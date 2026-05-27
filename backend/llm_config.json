@@ -1,26 +1,269 @@
 {
   "providers": [
     {
+      "name": "openai",
+      "display_name": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "protocol": "openai_compatible",
+      "status": "ready",
+      "models": [
+        {
+          "name": "gpt-4.1",
+          "display_name": "GPT-4.1",
+          "description": "高质量通用模型，适合复杂任务和代码"
+        },
+        {
+          "name": "gpt-4.1-mini",
+          "display_name": "GPT-4.1 Mini",
+          "description": "速度和成本更均衡的通用模型"
+        },
+        {
+          "name": "gpt-4o",
+          "display_name": "GPT-4o",
+          "description": "多模态通用模型，适合实时交互"
+        },
+        {
+          "name": "o4-mini",
+          "display_name": "o4-mini",
+          "description": "轻量推理模型，适合需要推理但控制成本的任务"
+        }
+      ]
+    },
+    {
       "name": "deepseek",
       "display_name": "DeepSeek",
       "base_url": "https://api.deepseek.com",
       "api_key_env": "DEEPSEEK_API_KEY",
-      "extra_body": {"thinking": {"type": "disabled"}},
+      "protocol": "openai_compatible",
+      "status": "ready",
+      "extra_body": {
+        "thinking": {
+          "type": "disabled"
+        }
+      },
       "models": [
-        {"name": "deepseek-v4-pro", "display_name": "DeepSeek V4 Pro", "description": "DeepSeek 最新旗舰模型"}
+        {
+          "name": "deepseek-v4-flash",
+          "display_name": "DeepSeek V4 Flash",
+          "description": "DeepSeek V4 低延迟高性价比模型"
+        },
+        {
+          "name": "deepseek-v4-pro",
+          "display_name": "DeepSeek V4 Pro",
+          "description": "DeepSeek V4 旗舰能力模型"
+        },
+        {
+          "name": "deepseek-chat",
+          "display_name": "DeepSeek Chat",
+          "description": "DeepSeek 通用对话兼容别名"
+        },
+        {
+          "name": "deepseek-reasoner",
+          "display_name": "DeepSeek Reasoner",
+          "description": "DeepSeek 推理兼容别名"
+        }
+      ],
+      "last_refreshed_at": "2026-05-27T06:27:28.063485"
+    },
+    {
+      "name": "dashscope",
+      "display_name": "阿里云百炼 / 通义千问",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "protocol": "openai_compatible",
+      "status": "ready",
+      "models": [
+        {
+          "name": "qwen-max",
+          "display_name": "Qwen Max",
+          "description": "通义千问旗舰模型"
+        },
+        {
+          "name": "qwen-plus",
+          "display_name": "Qwen Plus",
+          "description": "能力和成本均衡的通用模型"
+        },
+        {
+          "name": "qwen-turbo",
+          "display_name": "Qwen Turbo",
+          "description": "高速度低成本模型"
+        },
+        {
+          "name": "qwen-long",
+          "display_name": "Qwen Long",
+          "description": "长上下文模型"
+        }
       ]
     },
-     {
-        "name": "zhipu",
-        "display_name": "智谱",
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "api_key_env": "ZHIPU_API_KEY",
-        "models": [
-          {"name": "glm-4-plus", "display_name": "GLM-4-Plus", "description": "智谱最新旗舰模型"},
-          {"name": "glm-4-flash", "display_name": "GLM-4-Flash", "description": "轻量快速版"}
-        ]
-      }
+    {
+      "name": "moonshot",
+      "display_name": "Moonshot / Kimi",
+      "base_url": "https://api.moonshot.cn/v1",
+      "api_key_env": "MOONSHOT_API_KEY",
+      "protocol": "openai_compatible",
+      "status": "ready",
+      "models": [
+        {
+          "name": "moonshot-v1-8k",
+          "display_name": "Moonshot v1 8K",
+          "description": "Kimi 基础上下文模型"
+        },
+        {
+          "name": "moonshot-v1-32k",
+          "display_name": "Moonshot v1 32K",
+          "description": "Kimi 中长上下文模型"
+        },
+        {
+          "name": "moonshot-v1-128k",
+          "display_name": "Moonshot v1 128K",
+          "description": "Kimi 长上下文模型"
+        },
+        {
+          "name": "kimi-k2-0711-preview",
+          "display_name": "Kimi K2 Preview",
+          "description": "Kimi 新一代模型预览版"
+        }
+      ]
+    },
+    {
+      "name": "zhipu",
+      "display_name": "智谱 GLM",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "api_key_env": "ZHIPU_API_KEY",
+      "protocol": "openai_compatible",
+      "status": "ready",
+      "models": [
+        {
+          "name": "glm-4.5",
+          "display_name": "Glm 4.5",
+          "description": "从厂商 /models 接口同步"
+        },
+        {
+          "name": "glm-4.5-air",
+          "display_name": "Glm 4.5 Air",
+          "description": "从厂商 /models 接口同步"
+        },
+        {
+          "name": "glm-4.6",
+          "display_name": "Glm 4.6",
+          "description": "从厂商 /models 接口同步"
+        },
+        {
+          "name": "glm-4.7",
+          "display_name": "Glm 4.7",
+          "description": "从厂商 /models 接口同步"
+        },
+        {
+          "name": "glm-5",
+          "display_name": "Glm 5",
+          "description": "从厂商 /models 接口同步"
+        },
+        {
+          "name": "glm-5-turbo",
+          "display_name": "Glm 5 Turbo",
+          "description": "从厂商 /models 接口同步"
+        },
+        {
+          "name": "glm-5.1",
+          "display_name": "Glm 5.1",
+          "description": "从厂商 /models 接口同步"
+        },
+        {
+          "name": "glm-4-plus",
+          "display_name": "GLM-4-Plus",
+          "description": "智谱旗舰通用模型"
+        },
+        {
+          "name": "glm-4-air",
+          "display_name": "GLM-4-Air",
+          "description": "轻量高性价比模型"
+        },
+        {
+          "name": "glm-4-flash",
+          "display_name": "GLM-4-Flash",
+          "description": "快速响应模型"
+        }
+      ],
+      "last_refreshed_at": "2026-05-27T06:27:33.711167"
+    },
+    {
+      "name": "siliconflow",
+      "display_name": "硅基流动",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "api_key_env": "SILICONFLOW_API_KEY",
+      "protocol": "openai_compatible",
+      "status": "ready",
+      "models": [
+        {
+          "name": "deepseek-ai/DeepSeek-V3",
+          "display_name": "DeepSeek-V3",
+          "description": "硅基流动托管的 DeepSeek V3"
+        },
+        {
+          "name": "deepseek-ai/DeepSeek-R1",
+          "display_name": "DeepSeek-R1",
+          "description": "硅基流动托管的 DeepSeek R1"
+        },
+        {
+          "name": "Qwen/Qwen2.5-72B-Instruct",
+          "display_name": "Qwen2.5 72B Instruct",
+          "description": "开源大参数通用模型"
+        }
+      ]
+    },
+    {
+      "name": "gemini",
+      "display_name": "Google Gemini",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "api_key_env": "GEMINI_API_KEY",
+      "protocol": "openai_compatible",
+      "status": "ready",
+      "models": [
+        {
+          "name": "gemini-2.5-pro",
+          "display_name": "Gemini 2.5 Pro",
+          "description": "Google Gemini 高能力模型"
+        },
+        {
+          "name": "gemini-2.5-flash",
+          "display_name": "Gemini 2.5 Flash",
+          "description": "Google Gemini 速度优先模型"
+        },
+        {
+          "name": "gemini-2.0-flash",
+          "display_name": "Gemini 2.0 Flash",
+          "description": "Google Gemini 快速通用模型"
+        }
+      ]
+    },
+    {
+      "name": "anthropic",
+      "display_name": "Anthropic Claude",
+      "base_url": "",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "protocol": "native_anthropic",
+      "status": "adapter_pending",
+      "models": [
+        {
+          "name": "claude-opus-4-1",
+          "display_name": "Claude Opus 4.1",
+          "description": "Claude 高能力模型，待接入原生适配器"
+        },
+        {
+          "name": "claude-sonnet-4-0",
+          "display_name": "Claude Sonnet 4",
+          "description": "Claude 均衡模型，待接入原生适配器"
+        },
+        {
+          "name": "claude-3-5-haiku-latest",
+          "display_name": "Claude 3.5 Haiku",
+          "description": "Claude 快速模型，待接入原生适配器"
+        }
+      ]
+    }
   ],
   "default_provider": "deepseek",
-  "default_model": "deepseek-v4-pro"
+  "default_model": "deepseek-v4-pro",
+  "last_model_refresh_at": "2026-05-27T06:27:33.712545"
 }

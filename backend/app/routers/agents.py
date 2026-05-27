@@ -40,7 +40,10 @@ async def list_agents(db: AsyncSession = Depends(get_db)):
 
 @router.post("", response_model=AgentResponse, status_code=201)
 async def create_agent(data: AgentCreate, db: AsyncSession = Depends(get_db)):
-    agent = await services.create_agent(db, data)
+    try:
+        agent = await services.create_agent(db, data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return _agent_to_response(agent)
 
 
@@ -54,7 +57,10 @@ async def get_agent_detail(agent_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.patch("/{agent_id}", response_model=AgentResponse)
 async def update_agent(agent_id: str, data: AgentUpdate, db: AsyncSession = Depends(get_db)):
-    agent = await services.update_agent(db, agent_id, data)
+    try:
+        agent = await services.update_agent(db, agent_id, data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     return _agent_to_response(agent)

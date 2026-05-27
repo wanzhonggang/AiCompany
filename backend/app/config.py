@@ -53,6 +53,22 @@ def load_llm_config() -> dict:
         return json.load(f)
 
 
+def save_llm_config(config: dict) -> None:
+    CONFIG_FILE.write_text(
+        json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def set_env_value(name: str, value: str) -> None:
+    """Persist a secret into backend/.env.local without exposing it in JSON config."""
+    values = _read_env_file()
+    values[name] = value
+    LOCAL_ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"{key}={val}" for key, val in sorted(values.items())]
+    LOCAL_ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def get_provider(name: str | None = None) -> dict | None:
     """Get a specific provider config, or the default if name is None."""
     config = load_llm_config()
@@ -78,9 +94,17 @@ def get_providers_safe() -> list[dict]:
     config = load_llm_config()
     safe = []
     for p in config.get("providers", []):
+        env_key = p.get("api_key_env") or f"{p['name'].upper()}_API_KEY"
+        has_key = bool(get_env_value(env_key))
         safe.append({
             "name": p["name"],
             "display_name": p["display_name"],
+            "base_url": p.get("base_url", ""),
+            "api_key_env": env_key,
+            "protocol": p.get("protocol", "openai_compatible"),
+            "status": p.get("status", "ready"),
+            "configured": has_key,
+            "last_refreshed_at": p.get("last_refreshed_at"),
             "models": p.get("models", []),
         })
     return safe

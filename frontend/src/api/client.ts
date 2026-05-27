@@ -35,6 +35,12 @@ export interface Agent {
 export interface ProviderInfo {
   name: string;
   display_name: string;
+  base_url: string;
+  api_key_env: string;
+  protocol: string;
+  status: string;
+  configured: boolean;
+  last_refreshed_at?: string | null;
   models: { name: string; display_name: string; description: string }[];
 }
 
@@ -42,6 +48,7 @@ export interface LLMConfig {
   providers: ProviderInfo[];
   default_provider: string;
   default_model: string;
+  last_model_refresh_at?: string | null;
 }
 
 export interface Stats {
@@ -102,6 +109,8 @@ export interface TaskCreateInput {
   save_conversation?: boolean;
   next_run_at?: string | null;
 }
+
+export type TaskUpdateInput = Partial<TaskCreateInput>;
 
 // ---- Agents ----
 export async function getStats(): Promise<Stats> {
@@ -216,6 +225,11 @@ export async function renameConversation(convId: string, title: string): Promise
   await parseJsonResponse<{ ok: boolean }>(r, 'Failed to rename conversation');
 }
 
+export async function deleteConversation(convId: string): Promise<void> {
+  const r = await fetch(`${BASE}/chat/conversations/${convId}`, { method: 'DELETE' });
+  await parseJsonResponse<{ ok: boolean }>(r, 'Failed to delete conversation');
+}
+
 export interface ChatMessageHistory {
   id: string;
   role: string;
@@ -245,10 +259,47 @@ export async function createTask(agentId: string, data: TaskCreateInput): Promis
   return parseJsonResponse<TaskInfo>(r, 'Failed to create task');
 }
 
+export async function updateTask(taskId: string, data: TaskUpdateInput): Promise<TaskInfo> {
+  const r = await fetch(`${BASE}/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<TaskInfo>(r, 'Failed to update task');
+}
+
+export async function deleteTask(taskId: string): Promise<void> {
+  const r = await fetch(`${BASE}/tasks/${taskId}`, { method: 'DELETE' });
+  await parseJsonResponse<{ ok: boolean }>(r, 'Failed to delete task');
+}
+
 // ---- LLM Config ----
 export async function getLLMConfig(): Promise<LLMConfig> {
   const r = await fetch(`${BASE}/llm/providers`);
   return parseJsonResponse<LLMConfig>(r, 'Failed to load LLM config');
+}
+
+export async function saveProviderApiKey(providerName: string, apiKey: string): Promise<void> {
+  const r = await fetch(`${BASE}/llm/providers/${providerName}/api-key`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+  await parseJsonResponse<{ ok: boolean }>(r, 'Failed to save API key');
+}
+
+export async function setDefaultModel(provider: string, model: string): Promise<void> {
+  const r = await fetch(`${BASE}/llm/default`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, model }),
+  });
+  await parseJsonResponse<{ ok: boolean }>(r, 'Failed to set default model');
+}
+
+export async function refreshLLMModels(): Promise<LLMConfig & { updated: Array<Record<string, unknown>> }> {
+  const r = await fetch(`${BASE}/llm/refresh-models`, { method: 'POST' });
+  return parseJsonResponse<LLMConfig & { updated: Array<Record<string, unknown>> }>(r, 'Failed to refresh model list');
 }
 
 // ---- Tools ----

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getStats, getAgents, type Stats, type Agent } from '../api/client'
+import { getStats, getAgents, getLLMConfig, type Stats, type Agent, type LLMConfig } from '../api/client'
 
 const STATUS_ICONS: Record<string, { icon: string; cls: string }> = {
   total: { icon: '👥', cls: 'rgba(99,102,241,0.2)' },
@@ -13,13 +13,15 @@ const STATUS_ICONS: Record<string, { icon: string; cls: string }> = {
 export function Dashboard({ showToast }: { showToast: (msg: string, type: string) => void }) {
   const [stats, setStats] = useState<Stats | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
+  const [llmConfig, setLLMConfig] = useState<LLMConfig | null>(null)
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async (showError = true) => {
     try {
-      const [s, a] = await Promise.all([getStats(), getAgents()])
+      const [s, a, llm] = await Promise.all([getStats(), getAgents(), getLLMConfig()])
       setStats(s)
       setAgents(a)
+      setLLMConfig(llm)
     } catch {
       if (showError) showToast('加载数据失败，请确保后端已启动', 'error')
     } finally {
@@ -62,6 +64,26 @@ export function Dashboard({ showToast }: { showToast: (msg: string, type: string
           </div>
         ))}
       </div>
+
+      {llmConfig && (
+        <div className="dashboard-model-strip">
+          <div>
+            <h2>可用模型</h2>
+            <p>当前默认：{llmConfig.default_provider} / {llmConfig.default_model}</p>
+          </div>
+          <div className="available-models">
+            {llmConfig.providers.filter(p => p.configured && p.status === 'ready').flatMap(p =>
+              p.models.slice(0, 3).map(m => (
+                <span key={`${p.name}-${m.name}`}>{p.display_name} · {m.display_name}</span>
+              ))
+            )}
+            {llmConfig.providers.filter(p => p.configured && p.status === 'ready').length === 0 && (
+              <span>还没有配置 API Key</span>
+            )}
+          </div>
+          <Link to="/models" className="btn btn-primary btn-sm">管理模型</Link>
+        </div>
+      )}
 
       <div style={{ marginBottom: 16 }}>
         <h2 style={{ fontSize: '1.1rem', marginBottom: 12 }}>AI 员工概览</h2>

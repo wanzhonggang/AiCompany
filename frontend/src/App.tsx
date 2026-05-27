@@ -3,6 +3,8 @@ import { Dashboard } from './pages/Dashboard'
 import { Agents } from './pages/Agents'
 import { AgentChat } from './pages/AgentChat'
 import { Office } from './pages/Office'
+import { TaskManagement } from './pages/TaskManagement'
+import { ModelManagement } from './pages/ModelManagement'
 import { useState } from 'react'
 
 function Sidebar() {
@@ -11,6 +13,8 @@ function Sidebar() {
     { to: '/', label: '📊 控制台', exact: true },
     { to: '/office', label: '🏢 AI办公室', exact: false },
     { to: '/agents', label: '🤖 AI 员工', exact: false },
+    { to: '/tasks', label: '📋 任务管理', exact: false },
+    { to: '/models', label: '🧠 模型管理', exact: false },
   ]
 
   return (
@@ -48,6 +52,8 @@ export default function App() {
             <Route path="/" element={<Dashboard showToast={showToast} />} />
             <Route path="/office" element={<Office showToast={showToast} />} />
             <Route path="/agents" element={<Agents showToast={showToast} />} />
+            <Route path="/tasks" element={<TaskManagement showToast={showToast} />} />
+            <Route path="/models" element={<ModelManagement showToast={showToast} />} />
             <Route path="/agents/:id/chat" element={<AgentChat showToast={showToast} />} />
           </Routes>
         </main>

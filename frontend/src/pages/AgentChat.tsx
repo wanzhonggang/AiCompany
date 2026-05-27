@@ -3,11 +3,14 @@ import { useParams, Link } from 'react-router-dom'
 import {
   chatWithAgent,
   createTask,
+  deleteConversation,
+  deleteTask,
   getAgent,
   getAgentTasks,
   getConversations,
   getMessages,
   renameConversation,
+  updateTask,
   type Agent,
   type ChatMessageHistory,
   type Conversation,
@@ -20,6 +23,16 @@ interface ChatMessage {
   content: string
   data?: Record<string, unknown>
   toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>
+}
+
+type TaskFormState = {
+  title: string
+  description: string
+  task_type: 'immediate' | 'scheduled'
+  next_run_at: string
+  repeat: 'none' | 'daily' | 'weekly'
+  priority: string
+  save_conversation: boolean
 }
 
 const STATUS_MAP: Record<string, string> = {
@@ -49,6 +62,11 @@ function toDatetimeLocal(value: Date) {
   return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}`
 }
 
+function toDatetimeLocalFromIso(value: string | null | undefined) {
+  if (!value) return toDatetimeLocal(new Date(Date.now() + 10 * 60 * 1000))
+  return toDatetimeLocal(new Date(value))
+}
+
 function displayTime(value: string | null | undefined) {
   if (!value) return '-'
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
@@ -68,12 +86,22 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
   const [editingTitle, setEditingTitle] = useState<string | null>(null)
   const [titleInput, setTitleInput] = useState('')
   const [taskModalOpen, setTaskModalOpen] = useState(false)
-  const [taskForm, setTaskForm] = useState({
+  const [selectedTask, setSelectedTask] = useState<TaskInfo | null>(null)
+  const [taskForm, setTaskForm] = useState<TaskFormState>({
     title: '',
     description: '',
     task_type: 'immediate' as 'immediate' | 'scheduled',
     next_run_at: toDatetimeLocal(new Date(Date.now() + 10 * 60 * 1000)),
     repeat: 'none' as 'none' | 'daily' | 'weekly',
+    priority: 'normal',
+    save_conversation: true,
+  })
+  const [taskEditForm, setTaskEditForm] = useState<TaskFormState>({
+    title: '',
+    description: '',
+    task_type: 'immediate',
+    next_run_at: toDatetimeLocal(new Date(Date.now() + 10 * 60 * 1000)),
+    repeat: 'none',
     priority: 'normal',
     save_conversation: true,
   })
@@ -131,6 +159,46 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
     () => convs.find(c => c.id === conversationId) || null,
     [convs, conversationId],
   )
+
+  const openTaskDetail = (task: TaskInfo) => {
+    setSelectedTask(task)
+    setTaskEditForm({
+      title: task.title,
+      description: task.description || '',
+      task_type: task.task_type === 'scheduled' ? 'scheduled' : 'immediate',
+      next_run_at: toDatetimeLocalFromIso(task.next_run_at),
+      repeat: (task.repeat as 'none' | 'daily' | 'weekly') || 'none',
+      priority: task.priority || 'normal',
+      save_conversation: task.save_conversation,
+    })
+  }
+
+  const handleDeleteConversation = async () => {
+    if (!selectedConversation || sending) return
+    if (!confirm(`确定删除对话「${selectedConversation.title}」吗？删除后无法恢复。`)) return
+
+    try {
+      await deleteConversation(selectedConversation.id)
+      const nextConvs = convs.filter(c => c.id !== selectedConversation.id)
+      setConvs(nextConvs)
+
+      const nextConv = nextConvs[0] || null
+      if (nextConv) {
+        setConversationId(nextConv.id)
+        await loadMessages(nextConv.id)
+      } else {
+        setConversationId(null)
+        setMessages([])
+      }
+
+      if (id) {
+        getAgentTasks(id).then(setTasks).catch(() => {})
+      }
+      showToast('对话已删除', 'success')
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '删除对话失败', 'error')
+    }
+  }
 
   const handleSend = () => {
     if (!input.trim() || sending || !id) return
@@ -245,6 +313,44 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
     }
   }
 
+  const submitTaskEdit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedTask || !taskEditForm.title.trim()) return
+    try {
+      const nextRunAt = taskEditForm.task_type === 'scheduled'
+        ? new Date(taskEditForm.next_run_at).toISOString()
+        : null
+      const updated = await updateTask(selectedTask.id, {
+        title: taskEditForm.title.trim(),
+        description: taskEditForm.description.trim(),
+        task_type: taskEditForm.task_type,
+        schedule: taskEditForm.task_type === 'scheduled' ? `${displayTime(nextRunAt)} ${REPEAT_LABEL[taskEditForm.repeat]}` : null,
+        repeat: taskEditForm.task_type === 'scheduled' ? taskEditForm.repeat : 'none',
+        priority: taskEditForm.priority,
+        save_conversation: taskEditForm.save_conversation,
+        next_run_at: nextRunAt,
+      })
+      setTasks(prev => prev.map(task => task.id === updated.id ? updated : task))
+      setSelectedTask(updated)
+      showToast('任务已更新', 'success')
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '更新任务失败', 'error')
+    }
+  }
+
+  const handleDeleteTask = async () => {
+    if (!selectedTask) return
+    if (!confirm(`确定删除任务「${selectedTask.title}」吗？任务记录删除后无法恢复。`)) return
+    try {
+      await deleteTask(selectedTask.id)
+      setTasks(prev => prev.filter(task => task.id !== selectedTask.id))
+      setSelectedTask(null)
+      showToast('任务已删除', 'success')
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '删除任务失败', 'error')
+    }
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -280,7 +386,19 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
           <div className="panel-title">任务记录</div>
           <div className="task-list">
             {tasks.map(task => (
-              <div key={task.id} className={`task-item task-${task.status}`}>
+              <div
+                key={task.id}
+                className={`task-item task-${task.status}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => openTaskDetail(task)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    openTaskDetail(task)
+                  }
+                }}
+              >
                 <div className="task-row">
                   <div className="task-title">{task.title}</div>
                   <span className={`task-pill task-pill-${task.status}`}>{TASK_STATUS[task.status] || task.status}</span>
@@ -292,17 +410,29 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
                 {task.last_run_at && <div className="task-meta">上次执行：{displayTime(task.last_run_at)}</div>}
                 {task.output && <div className="task-output">{task.output}</div>}
                 {task.error && <div className="task-error">{task.error}</div>}
-                {task.conversation_id && (
+                <div className="task-actions">
                   <button
                     className="btn btn-ghost btn-sm"
-                    onClick={() => {
+                    onClick={e => {
+                      e.stopPropagation()
+                      openTaskDetail(task)
+                    }}
+                  >
+                    详情
+                  </button>
+                  {task.conversation_id && (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={e => {
+                      e.stopPropagation()
                       setConversationId(task.conversation_id)
                       loadMessages(task.conversation_id!)
                     }}
                   >
                     查看对话
                   </button>
-                )}
+                  )}
+                </div>
               </div>
             ))}
             {tasks.length === 0 && <div className="empty-mini">还没有任务，点击右上角新建。</div>}
@@ -336,15 +466,24 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
               新对话
             </button>
             {selectedConversation && (
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  setEditingTitle(selectedConversation.id)
-                  setTitleInput(selectedConversation.title)
-                }}
-              >
-                重命名
-              </button>
+              <>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    setEditingTitle(selectedConversation.id)
+                    setTitleInput(selectedConversation.title)
+                  }}
+                >
+                  重命名
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm danger-text"
+                  onClick={handleDeleteConversation}
+                  disabled={sending}
+                >
+                  删除
+                </button>
+              </>
             )}
           </div>
 
@@ -417,6 +556,158 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
                 <button type="button" className="btn btn-secondary" onClick={() => setEditingTitle(null)}>取消</button>
                 <button type="submit" className="btn btn-primary">保存</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {selectedTask && (
+        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setSelectedTask(null) }}>
+          <div className="modal-content task-detail-modal">
+            <div className="modal-header">
+              <div>
+                <h3 className="modal-title">任务详情</h3>
+                <div className="task-meta">
+                  {TASK_STATUS[selectedTask.status] || selectedTask.status} · 创建于 {displayTime(selectedTask.created_at)}
+                </div>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setSelectedTask(null)}>关闭</button>
+            </div>
+            <form onSubmit={submitTaskEdit} className="task-form">
+              <label>
+                <span>任务标题</span>
+                <input
+                  className="form-input"
+                  value={taskEditForm.title}
+                  onChange={e => setTaskEditForm({ ...taskEditForm, title: e.target.value })}
+                  disabled={selectedTask.status === 'running'}
+                  required
+                />
+              </label>
+              <label>
+                <span>任务说明</span>
+                <textarea
+                  className="form-textarea"
+                  value={taskEditForm.description}
+                  onChange={e => setTaskEditForm({ ...taskEditForm, description: e.target.value })}
+                  disabled={selectedTask.status === 'running'}
+                />
+              </label>
+              <div className="form-grid">
+                <label>
+                  <span>任务类型</span>
+                  <select
+                    className="form-select"
+                    value={taskEditForm.task_type}
+                    onChange={e => setTaskEditForm({ ...taskEditForm, task_type: e.target.value as 'immediate' | 'scheduled' })}
+                    disabled={selectedTask.status === 'running'}
+                  >
+                    <option value="immediate">立即任务</option>
+                    <option value="scheduled">定时任务</option>
+                  </select>
+                </label>
+                <label>
+                  <span>优先级</span>
+                  <select
+                    className="form-select"
+                    value={taskEditForm.priority}
+                    onChange={e => setTaskEditForm({ ...taskEditForm, priority: e.target.value })}
+                    disabled={selectedTask.status === 'running'}
+                  >
+                    <option value="low">低</option>
+                    <option value="normal">普通</option>
+                    <option value="high">高</option>
+                  </select>
+                </label>
+              </div>
+              {taskEditForm.task_type === 'scheduled' && (
+                <div className="form-grid">
+                  <label>
+                    <span>下次执行时间</span>
+                    <input
+                      className="form-input"
+                      type="datetime-local"
+                      value={taskEditForm.next_run_at}
+                      onChange={e => setTaskEditForm({ ...taskEditForm, next_run_at: e.target.value })}
+                      disabled={selectedTask.status === 'running'}
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span>重复</span>
+                    <select
+                      className="form-select"
+                      value={taskEditForm.repeat}
+                      onChange={e => setTaskEditForm({ ...taskEditForm, repeat: e.target.value as 'none' | 'daily' | 'weekly' })}
+                      disabled={selectedTask.status === 'running'}
+                    >
+                      <option value="none">不重复</option>
+                      <option value="daily">每天</option>
+                      <option value="weekly">每周</option>
+                    </select>
+                  </label>
+                </div>
+              )}
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={taskEditForm.save_conversation}
+                  onChange={e => setTaskEditForm({ ...taskEditForm, save_conversation: e.target.checked })}
+                  disabled={selectedTask.status === 'running'}
+                />
+                保存任务对话和执行过程
+              </label>
+
+              <div className="task-detail-grid">
+                <div><span>上次执行</span><strong>{displayTime(selectedTask.last_run_at)}</strong></div>
+                <div><span>完成时间</span><strong>{displayTime(selectedTask.completed_at)}</strong></div>
+                <div><span>迭代次数</span><strong>{selectedTask.iterations}</strong></div>
+                <div><span>Token</span><strong>{selectedTask.tokens_used}</strong></div>
+              </div>
+
+              {selectedTask.output && (
+                <div>
+                  <div className="task-section-title">任务输出</div>
+                  <div className="task-output task-output-full">{selectedTask.output}</div>
+                </div>
+              )}
+              {selectedTask.error && (
+                <div>
+                  <div className="task-section-title">错误信息</div>
+                  <div className="task-error task-output-full">{selectedTask.error}</div>
+                </div>
+              )}
+
+              <div className="modal-actions split-actions">
+                <div>
+                  {selectedTask.conversation_id && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        setConversationId(selectedTask.conversation_id)
+                        loadMessages(selectedTask.conversation_id!)
+                        setSelectedTask(null)
+                      }}
+                    >
+                      查看对话
+                    </button>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost danger-text"
+                    onClick={handleDeleteTask}
+                    disabled={selectedTask.status === 'running'}
+                  >
+                    删除任务
+                  </button>
+                  <button type="submit" className="btn btn-primary" disabled={selectedTask.status === 'running'}>
+                    保存修改
+                  </button>
+                </div>
               </div>
             </form>
           </div>

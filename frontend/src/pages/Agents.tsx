@@ -30,12 +30,19 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
   const [formModel, setFormModel] = useState('')
   const [llmConfig, setLLMConfig] = useState<LLMConfig | null>(null)
 
+  const availableProviders = (llmConfig?.providers || []).filter(p => p.configured && p.status === 'ready')
+  const currentProvider = availableProviders.find(p => p.name === formProvider)
+  const firstAvailableProvider = availableProviders[0]
+  const defaultProviderAvailable = availableProviders.find(p => p.name === llmConfig?.default_provider)
+
   const loadLLMConfig = useCallback(async () => {
     try {
       const cfg = await getLLMConfig()
       setLLMConfig(cfg)
-      setFormProvider(cfg.default_provider)
-      setFormModel(cfg.default_model)
+      const usableDefault = cfg.providers.find(p => p.name === cfg.default_provider && p.configured && p.status === 'ready')
+      const fallback = usableDefault || cfg.providers.find(p => p.configured && p.status === 'ready')
+      setFormProvider(fallback?.name || '')
+      setFormModel(fallback?.models[0]?.name || '')
     } catch { /* no-op, wait for backend */ }
   }, [])
 
@@ -60,8 +67,9 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
     setEditing(null)
     setFormName(''); setFormRole(''); setFormDept('')
     setFormSkills(''); setFormPrompt('')
-    setFormProvider(llmConfig?.default_provider || '')
-    setFormModel(llmConfig?.default_model || '')
+    const provider = defaultProviderAvailable || firstAvailableProvider
+    setFormProvider(provider?.name || '')
+    setFormModel(provider?.models[0]?.name || '')
     setFormColor(AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)])
     setShowForm(true)
   }
@@ -71,14 +79,21 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
     setFormName(a.name); setFormRole(a.role); setFormDept(a.department)
     setFormSkills(a.skills.join(', ')); setFormPrompt(a.system_prompt)
     setFormColor(a.avatar_color)
-    setFormProvider(a.provider || llmConfig?.default_provider || '')
-    setFormModel(a.model_name || llmConfig?.default_model || '')
+    const agentProvider = availableProviders.find(p => p.name === a.provider)
+    const provider = agentProvider || defaultProviderAvailable || firstAvailableProvider
+    const model = provider?.models.find(m => m.name === a.model_name) || provider?.models[0]
+    setFormProvider(provider?.name || '')
+    setFormModel(model?.name || '')
     setShowForm(true)
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!formName.trim() || !formRole.trim()) return
+    if (!formProvider || !formModel) {
+      showToast('没有可用模型，请先到模型管理配置 API Key', 'error')
+      return
+    }
 
     try {
       if (editing) {
@@ -100,8 +115,8 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
       }
       setShowForm(false)
       load()
-    } catch {
-      showToast('操作失败', 'error')
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '操作失败', 'error')
     }
   }
 
@@ -223,25 +238,32 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                   <div>
                     <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 4 }}>LLM 供应商</label>
-                    <select className="form-select" value={formProvider} onChange={e => {
+                    <select className="form-select" value={formProvider} disabled={availableProviders.length === 0} onChange={e => {
                       setFormProvider(e.target.value)
-                      const provider = llmConfig?.providers.find(p => p.name === e.target.value)
+                      const provider = availableProviders.find(p => p.name === e.target.value)
                       setFormModel(provider?.models[0]?.name || '')
                     }}>
-                      {(llmConfig?.providers || []).map(p => (
+                      {availableProviders.length === 0 && <option value="">请先配置 API Key</option>}
+                      {availableProviders.map(p => (
                         <option key={p.name} value={p.name}>{p.display_name}</option>
                       ))}
                     </select>
                   </div>
                   <div>
                     <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 4 }}>模型</label>
-                    <select className="form-select" value={formModel} onChange={e => setFormModel(e.target.value)}>
-                      {(llmConfig?.providers.find(p => p.name === formProvider)?.models || []).map(m => (
+                    <select className="form-select" value={formModel} disabled={!currentProvider} onChange={e => setFormModel(e.target.value)}>
+                      {!currentProvider && <option value="">暂无可用模型</option>}
+                      {(currentProvider?.models || []).map(m => (
                         <option key={m.name} value={m.name}>{m.display_name}</option>
                       ))}
                     </select>
                   </div>
                 </div>
+                {availableProviders.length === 0 && (
+                  <div className="form-help-error">
+                    当前没有已配置 API Key 的模型。请先进入「模型管理」填写并通过校验后再创建或编辑员工。
+                  </div>
+                )}
                 <div>
                   <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 4 }}>头像颜色</label>
                   <div style={{ display: 'flex', gap: 8 }}>
@@ -256,7 +278,7 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
                   <button type="button" className="btn btn-secondary" onClick={() => setShowForm(false)}>取消</button>
-                  <button type="submit" className="btn btn-primary">{editing ? '保存修改' : '确认添加'}</button>
+                  <button type="submit" className="btn btn-primary" disabled={availableProviders.length === 0}>{editing ? '保存修改' : '确认添加'}</button>
                 </div>
               </div>
             </form>

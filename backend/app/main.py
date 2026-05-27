@@ -1,10 +1,13 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from datetime import datetime
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
+from pydantic import BaseModel, Field
 
-from .config import get_providers_safe, load_llm_config
+from .config import get_provider, get_providers_safe, load_llm_config, save_llm_config, set_env_value
 from .database import init_db, async_session
 from .routers import agents, chat, tools, tasks
 from .models import Agent, AgentToolBinding, ToolDefinition
@@ -167,4 +170,183 @@ async def list_providers():
         "providers": get_providers_safe(),
         "default_provider": config.get("default_provider", ""),
         "default_model": config.get("default_model", ""),
+        "last_model_refresh_at": config.get("last_model_refresh_at"),
+    }
+
+
+class ProviderKeyRequest(BaseModel):
+    api_key: str = Field(..., min_length=1, max_length=4000)
+
+
+class DefaultModelRequest(BaseModel):
+    provider: str = Field(..., min_length=1, max_length=50)
+    model: str = Field(..., min_length=1, max_length=150)
+
+
+async def _validate_openai_compatible_key(provider: dict, api_key: str) -> tuple[bool, str]:
+    if provider.get("status") != "ready":
+        return False, "该厂商暂未接入运行时"
+    if provider.get("protocol", "openai_compatible") != "openai_compatible":
+        return False, "该厂商不是 OpenAI 兼容接口，暂不能直接测试"
+
+    base_url = (provider.get("base_url") or "").rstrip("/")
+    if not base_url:
+        return False, "厂商缺少 base_url 配置"
+
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            response = await client.get(
+                f"{base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+        if response.status_code in {401, 403}:
+            return False, "API Key 无效或没有权限"
+        if response.status_code == 402:
+            return True, "API Key 可识别，但账户余额不足"
+        if response.status_code >= 400:
+            return False, f"厂商校验失败：HTTP {response.status_code}"
+        payload = response.json()
+        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            return True, "ok"
+        return True, "API Key 已通过连通性测试"
+    except httpx.ConnectError:
+        return False, "无法连接到厂商接口"
+    except httpx.TimeoutException:
+        return False, "连接厂商接口超时"
+    except Exception as e:
+        return False, str(e)
+
+
+@app.post("/api/llm/providers/{provider_name}/api-key")
+async def save_provider_api_key(provider_name: str, data: ProviderKeyRequest):
+    config = load_llm_config()
+    provider = next((p for p in config.get("providers", []) if p.get("name") == provider_name), None)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    api_key = data.api_key.strip()
+    ok, message = await _validate_openai_compatible_key(provider, api_key)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"API Key 校验失败：{message}")
+
+    env_key = provider.get("api_key_env") or f"{provider_name.upper()}_API_KEY"
+    set_env_value(env_key, api_key)
+    return {"ok": True, "message": message}
+
+
+@app.patch("/api/llm/default")
+async def set_default_model(data: DefaultModelRequest):
+    config = load_llm_config()
+    provider = next((p for p in config.get("providers", []) if p.get("name") == data.provider), None)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    model_names = {m.get("name") for m in provider.get("models", [])}
+    if data.model not in model_names:
+        raise HTTPException(status_code=404, detail="Model not found")
+    config["default_provider"] = data.provider
+    config["default_model"] = data.model
+    save_llm_config(config)
+    return {"ok": True}
+
+
+def _format_model_name(model_id: str) -> str:
+    cleaned = model_id.split("/")[-1].replace("-", " ").replace("_", " ")
+    return " ".join(part.capitalize() if not part.isupper() else part for part in cleaned.split())
+
+
+def _merge_provider_models(provider: dict, fetched_ids: list[str]) -> int:
+    existing = {m.get("name"): dict(m) for m in provider.get("models", [])}
+    changed = 0
+    merged = []
+    seen = set()
+
+    for model_id in fetched_ids:
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        current = existing.get(model_id)
+        if current:
+            merged.append(current)
+        else:
+            changed += 1
+            merged.append({
+                "name": model_id,
+                "display_name": _format_model_name(model_id),
+                "description": "从厂商 /models 接口同步",
+            })
+
+    for model_id, model in existing.items():
+        if model_id not in seen:
+            merged.append(model)
+
+    provider["models"] = merged
+    provider["last_refreshed_at"] = datetime.utcnow().isoformat()
+    return changed
+
+
+@app.post("/api/llm/refresh-models")
+async def refresh_models():
+    """Refresh model choices from configured OpenAI-compatible providers."""
+    config = load_llm_config()
+    updated: list[dict] = []
+
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        for provider in config.get("providers", []):
+            if provider.get("status") != "ready" or provider.get("protocol", "openai_compatible") != "openai_compatible":
+                continue
+            base_url = (provider.get("base_url") or "").rstrip("/")
+            if not base_url:
+                continue
+
+            runtime_provider = get_provider(provider.get("name"))
+            api_key = runtime_provider.get("api_key") if runtime_provider else ""
+            if not api_key:
+                updated.append({
+                    "provider": provider.get("name"),
+                    "status": "skipped",
+                    "reason": "missing_api_key",
+                    "added": 0,
+                    "total": len(provider.get("models", [])),
+                })
+                continue
+
+            try:
+                response = await client.get(
+                    f"{base_url}/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                raw_models = payload.get("data", []) if isinstance(payload, dict) else []
+                model_ids = []
+                for item in raw_models:
+                    if isinstance(item, dict):
+                        model_id = item.get("id") or item.get("name")
+                        if model_id:
+                            model_ids.append(str(model_id))
+                added = _merge_provider_models(provider, model_ids)
+                updated.append({
+                    "provider": provider.get("name"),
+                    "status": "updated",
+                    "added": added,
+                    "total": len(provider.get("models", [])),
+                })
+            except Exception as e:
+                updated.append({
+                    "provider": provider.get("name"),
+                    "status": "failed",
+                    "reason": str(e),
+                    "added": 0,
+                    "total": len(provider.get("models", [])),
+                })
+
+    config["last_model_refresh_at"] = datetime.utcnow().isoformat()
+    save_llm_config(config)
+    return {
+        "ok": True,
+        "updated": updated,
+        "providers": get_providers_safe(),
+        "default_provider": config.get("default_provider", ""),
+        "default_model": config.get("default_model", ""),
+        "last_model_refresh_at": config.get("last_model_refresh_at"),
     }

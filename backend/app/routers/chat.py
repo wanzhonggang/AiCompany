@@ -2,10 +2,11 @@ import json
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db, async_session
-from ..models import Message
+from ..models import Message, Task
 from ..schemas import ChatRequest, ConversationRenameRequest
 from ..services import get_agent, get_conversation, create_conversation, get_conversation_messages, get_tools_for_agent
 from ..agent_runtime.core import AgentRuntime, AgentConfig, AgentEvent
@@ -159,6 +160,22 @@ async def rename_conversation(
         raise HTTPException(422, "Conversation title cannot be empty")
     conv.title = title
     conv.updated_at = datetime.utcnow()
+    await db.commit()
+    return {"ok": True}
+
+
+@router.delete("/conversations/{conv_id}")
+async def delete_conversation(conv_id: str, db: AsyncSession = Depends(get_db)):
+    conv = await get_conversation(db, conv_id)
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+
+    await db.execute(
+        update(Task)
+        .where(Task.conversation_id == conv_id)
+        .values(conversation_id=None)
+    )
+    await db.delete(conv)
     await db.commit()
     return {"ok": True}
 
