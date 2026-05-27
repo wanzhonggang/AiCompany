@@ -75,6 +75,16 @@ export interface ToolDef {
   spec: Record<string, unknown>;
 }
 
+export interface Department {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  member_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface TaskInfo {
   id: string;
   agent_id: string;
@@ -149,6 +159,35 @@ export async function updateAgent(id: string, data: Partial<Agent>): Promise<Age
 export async function deleteAgent(id: string): Promise<void> {
   const r = await fetch(`${BASE}/agents/${id}`, { method: 'DELETE' });
   if (!r.ok) throw new Error('Failed to delete agent');
+}
+
+// ---- Departments ----
+export async function getDepartments(): Promise<Department[]> {
+  const r = await fetch(`${BASE}/departments`);
+  return parseJsonResponse<Department[]>(r, 'Failed to load departments');
+}
+
+export async function createDepartment(data: Partial<Department>): Promise<Department> {
+  const r = await fetch(`${BASE}/departments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<Department>(r, 'Failed to create department');
+}
+
+export async function updateDepartment(id: string, data: Partial<Department>): Promise<Department> {
+  const r = await fetch(`${BASE}/departments/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<Department>(r, 'Failed to update department');
+}
+
+export async function deleteDepartment(id: string): Promise<void> {
+  const r = await fetch(`${BASE}/departments/${id}`, { method: 'DELETE' });
+  await parseJsonResponse<{ ok: boolean }>(r, 'Failed to delete department');
 }
 
 // ---- Chat (SSE) ----

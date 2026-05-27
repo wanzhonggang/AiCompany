@@ -49,6 +49,31 @@ class AgentResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# ---- Department ----
+class DepartmentCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field(default="", max_length=2000)
+    color: str = Field(default="#06b6d4", max_length=7)
+
+
+class DepartmentUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    color: Optional[str] = Field(default=None, max_length=7)
+
+
+class DepartmentResponse(BaseModel):
+    id: str
+    name: str
+    description: str
+    color: str
+    member_count: int = 0
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
 # ---- Chat ----
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=20000)

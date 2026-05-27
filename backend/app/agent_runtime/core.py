@@ -19,6 +19,7 @@ class AgentConfig:
     provider: str = "deepseek"
     model_name: str = "deepseek-chat"
     tools: list[BaseTool] = field(default_factory=list)
+    agent_id: str = ""
 
 
 @dataclass
@@ -78,6 +79,15 @@ class AgentRuntime:
                 "- 你已经具备系统提供的工具能力。用户要求你读取文件、写文件、搜索网页、打开网页、操作浏览器、点击页面、输入内容、截图时，优先调用对应工具完成，不要只给口头步骤。\n"
                 "- 不要说“我无法打开浏览器”“我不能控制桌面/浏览器”，除非对应工具调用失败，并且要把失败原因告诉用户。\n"
                 "- 如果用户让你把文件放到桌面，使用 Desktop/文件名 或 桌面/文件名 路径。\n"
+            )
+
+        if "delegate_task" in tool_names:
+            prompt += (
+                "\n内部协作规则：\n"
+                "- 你可以通过 delegate_task 把任务直接委派给公司里的其他 AI 员工，这比邮件更可靠。\n"
+                "- 用户要求你通知、安排、对接、转交、让某个员工执行任务时，优先调用 delegate_task。\n"
+                "- 委派时要写清楚目标员工、任务标题、具体说明、优先级，以及是否需要对方保存执行过程。\n"
+                "- 不要说“员工之间不能互通”或“只能让老板自己去说”；如果目标员工存在，就使用 delegate_task 创建对方任务。\n"
             )
 
         if "browser_open" in tool_names:
@@ -243,7 +253,7 @@ class AgentRuntime:
 
                     try:
                         result = await asyncio.wait_for(
-                            tool.execute(**args),
+                            tool.execute(current_agent_id=self.config.agent_id, **args),
                             timeout=tool.timeout_seconds,
                         )
                     except asyncio.TimeoutError:

@@ -9,9 +9,9 @@ from pydantic import BaseModel, Field
 
 from .config import get_provider, get_providers_safe, load_llm_config, save_llm_config, set_env_value
 from .database import init_db, async_session
-from .routers import agents, chat, tools, tasks
+from .routers import agents, chat, tools, tasks, departments
 from .models import Agent, AgentToolBinding, ToolDefinition
-from .services import BUILTIN_TOOLS, execute_task, get_due_scheduled_tasks
+from .services import BUILTIN_TOOLS, ensure_department, execute_task, get_due_scheduled_tasks
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -67,6 +67,17 @@ async def seed_data():
 
         result = await db.execute(select(func.count(Agent.id)))
         agent_count = result.scalar()
+        default_departments = [
+            ("老板办公室", "负责战略、目标、预算和最终决策。", "#f59e0b"),
+            ("运营部", "负责店铺运营、活动计划、日常增长和跨部门协调。", "#10b981"),
+            ("市场部", "负责市场调研、竞品分析、内容传播和品牌策略。", "#ec4899"),
+            ("技术部", "负责系统开发、自动化、数据接口和技术问题处理。", "#06b6d4"),
+            ("数据部", "负责数据分析、报表、指标监控和经营洞察。", "#6366f1"),
+            ("综合管理部", "负责行政、文档、流程和日程协同。", "#8b5cf6"),
+        ]
+        for name, description, color in default_departments:
+            await ensure_department(db, name, description, color)
+
         if agent_count == 0:
             logger.info("Seeding initial data...")
 
@@ -120,6 +131,8 @@ async def seed_data():
             await db.flush()
 
         agents = (await db.execute(select(Agent))).scalars().all()
+        for agent in agents:
+            await ensure_department(db, agent.department or "未分配")
         existing_bindings = {
             (agent_id, tool_name)
             for agent_id, tool_name in (await db.execute(
@@ -155,6 +168,7 @@ app.include_router(agents.router)
 app.include_router(chat.router)
 app.include_router(tools.router)
 app.include_router(tasks.router)
+app.include_router(departments.router)
 
 
 @app.get("/api/health")

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db, async_session
 from ..models import Message, Task
 from ..schemas import ChatRequest, ConversationRenameRequest
-from ..services import get_agent, get_conversation, create_conversation, get_conversation_messages, get_tools_for_agent
+from ..services import build_org_context, get_agent, get_conversation, create_conversation, get_conversation_messages, get_tools_for_agent
 from ..agent_runtime.core import AgentRuntime, AgentConfig, AgentEvent
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -50,12 +50,14 @@ async def chat_with_agent(agent_id: str, data: ChatRequest):
             await db.commit()
 
             tools = get_tools_for_agent(agent)
+            org_context = await build_org_context(db, agent)
             config = AgentConfig(
-                system_prompt=agent.system_prompt,
+                system_prompt=f"{agent.system_prompt}\n\n{org_context}",
                 max_iterations=agent.max_iterations,
                 provider=agent.provider,
                 model_name=agent.model_name,
                 tools=tools,
+                agent_id=agent.id,
             )
             try:
                 runtime = AgentRuntime(config)

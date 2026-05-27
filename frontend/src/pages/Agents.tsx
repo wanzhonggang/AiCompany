@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { getAgents, deleteAgent, createAgent, updateAgent, getLLMConfig, type Agent, type LLMConfig } from '../api/client'
+import { getAgents, deleteAgent, createAgent, updateAgent, getLLMConfig, getDepartments, type Agent, type Department, type LLMConfig } from '../api/client'
 
 const AVATAR_COLORS = [
   "#6366f1","#8b5cf6","#06b6d4","#10b981","#f59e0b",
@@ -29,6 +29,7 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
   const [formProvider, setFormProvider] = useState('')
   const [formModel, setFormModel] = useState('')
   const [llmConfig, setLLMConfig] = useState<LLMConfig | null>(null)
+  const [departments, setDepartments] = useState<Department[]>([])
 
   const availableProviders = (llmConfig?.providers || []).filter(p => p.configured && p.status === 'ready')
   const currentProvider = availableProviders.find(p => p.name === formProvider)
@@ -48,7 +49,9 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
 
   const load = useCallback(async (showError = true) => {
     try {
-      setAgents(await getAgents())
+      const [agentData, departmentData] = await Promise.all([getAgents(), getDepartments()])
+      setAgents(agentData)
+      setDepartments(departmentData)
     } catch {
       if (showError) showToast('加载失败', 'error')
     } finally {
@@ -225,7 +228,10 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 4 }}>部门</label>
-                  <input className="form-input" value={formDept} onChange={e => setFormDept(e.target.value)} placeholder="例如：技术研发部" maxLength={50} />
+                  <select className="form-select" value={formDept} onChange={e => setFormDept(e.target.value)} required>
+                    <option value="">请选择部门</option>
+                    {departments.map(dept => <option key={dept.id} value={dept.name}>{dept.name}</option>)}
+                  </select>
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 4 }}>技能（逗号分隔）</label>

@@ -49,6 +49,17 @@ class Agent(Base):
     tool_bindings = relationship("AgentToolBinding", back_populates="agent", cascade="all, delete-orphan")
 
 
+class Department(Base):
+    __tablename__ = "departments"
+
+    id = Column(String(12), primary_key=True, default=gen_id)
+    name = Column(String(100), unique=True, nullable=False)
+    description = Column(Text, default="")
+    color = Column(String(7), default="#06b6d4")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ToolDefinition(Base):
     __tablename__ = "tool_definitions"
 

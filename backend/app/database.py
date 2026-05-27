@@ -15,6 +15,15 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         if settings.database_url.startswith("sqlite"):
+            await conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS departments ("
+                "id VARCHAR(12) PRIMARY KEY, "
+                "name VARCHAR(100) UNIQUE NOT NULL, "
+                "description TEXT DEFAULT '', "
+                "color VARCHAR(7) DEFAULT '#06b6d4', "
+                "created_at DATETIME, "
+                "updated_at DATETIME)"
+            ))
             result = await conn.execute(text("PRAGMA table_info(tasks)"))
             columns = {row[1] for row in result.fetchall()}
             migrations = {

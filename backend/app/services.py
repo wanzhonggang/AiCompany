@@ -6,12 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from .config import get_default_model, get_provider, load_llm_config
-from .models import Agent, Task, Conversation, Message, AgentToolBinding, TaskStatus
-from .schemas import AgentCreate, AgentUpdate, TaskCreate, TaskUpdate
+from .models import Agent, Department, Task, Conversation, Message, AgentToolBinding, TaskStatus
+from .schemas import AgentCreate, AgentUpdate, DepartmentCreate, DepartmentUpdate, TaskCreate, TaskUpdate
 from .agent_runtime.core import AgentRuntime, AgentConfig, AgentEvent
 from .agent_runtime.tools.file_tools import ReadFileTool, WriteFileTool, ListDirectoryTool
 from .agent_runtime.tools.web_tools import WebSearchTool, WebFetchTool
 from .agent_runtime.tools.email_tools import SendEmailTool
+from .agent_runtime.tools.collaboration_tools import DelegateTaskTool
 from .agent_runtime.tools.browser_tools import (
     BrowserOpenTool,
     BrowserClickTool,
@@ -33,6 +34,7 @@ BUILTIN_TOOLS = [
     BrowserTypeTool(),
     BrowserSnapshotTool(),
     BrowserCloseTool(),
+    DelegateTaskTool(),
     SendEmailTool(),
 ]
 
@@ -64,10 +66,103 @@ def _validate_agent_model(provider_name: str, model_name: str) -> None:
         raise ValueError("所选模型不属于该供应商")
 
 
+async def build_org_context(db: AsyncSession, current_agent: Agent) -> str:
+    departments = await get_departments(db)
+    agents = await get_agents(db)
+    lines = ["公司组织结构："]
+    for dept in departments:
+        members = [a for a in agents if (a.department or "未分配") == dept.name]
+        member_text = "、".join(f"{a.name}（{a.role}）" for a in members) or "暂无成员"
+        lines.append(f"- {dept.name}：{dept.description or '暂无职责说明'}。成员：{member_text}")
+    lines.append(
+        f"你当前的身份是 {current_agent.name}，部门是 {current_agent.department or '未分配'}，职位是 {current_agent.role}。"
+        "当任务需要其他员工或其他部门配合时，请明确指出需要对接的员工/部门、需要交付的信息和下一步动作。"
+    )
+    return "\n".join(lines)
+
+
 # ---- Agent CRUD ----
+async def ensure_department(db: AsyncSession, name: str, description: str = "", color: str = "#06b6d4") -> Department:
+    clean_name = (name or "未分配").strip() or "未分配"
+    result = await db.execute(select(Department).where(Department.name == clean_name))
+    department = result.scalar_one_or_none()
+    if department:
+        return department
+    department = Department(name=clean_name, description=description, color=color)
+    db.add(department)
+    await db.flush()
+    return department
+
+
+async def get_departments(db: AsyncSession) -> list[Department]:
+    result = await db.execute(select(Department).order_by(Department.created_at.asc()))
+    return list(result.scalars().all())
+
+
+async def get_department_member_counts(db: AsyncSession) -> dict[str, int]:
+    rows = (await db.execute(select(Agent.department, func.count(Agent.id)).group_by(Agent.department))).all()
+    return {row[0] or "未分配": row[1] for row in rows}
+
+
+async def create_department(db: AsyncSession, data: DepartmentCreate) -> Department:
+    existing = await db.execute(select(Department).where(Department.name == data.name.strip()))
+    if existing.scalar_one_or_none():
+        raise ValueError("部门名称已存在")
+    department = Department(
+        name=data.name.strip(),
+        description=data.description,
+        color=data.color,
+    )
+    db.add(department)
+    await db.commit()
+    await db.refresh(department)
+    return department
+
+
+async def update_department(db: AsyncSession, department_id: str, data: DepartmentUpdate) -> Optional[Department]:
+    department = await db.get(Department, department_id)
+    if not department:
+        return None
+
+    update_data = data.model_dump(exclude_unset=True)
+    old_name = department.name
+    if "name" in update_data:
+        new_name = update_data["name"].strip()
+        if not new_name:
+            raise ValueError("部门名称不能为空")
+        existing = await db.execute(select(Department).where(Department.name == new_name, Department.id != department_id))
+        if existing.scalar_one_or_none():
+            raise ValueError("部门名称已存在")
+        update_data["name"] = new_name
+
+    for key, value in update_data.items():
+        setattr(department, key, value)
+    department.updated_at = datetime.utcnow()
+
+    if "name" in update_data and update_data["name"] != old_name:
+        await db.execute(update(Agent).where(Agent.department == old_name).values(department=update_data["name"]))
+
+    await db.commit()
+    await db.refresh(department)
+    return department
+
+
+async def delete_department(db: AsyncSession, department_id: str) -> bool:
+    department = await db.get(Department, department_id)
+    if not department:
+        return False
+    member_count = (await db.execute(select(func.count(Agent.id)).where(Agent.department == department.name))).scalar() or 0
+    if member_count > 0:
+        raise ValueError("部门下还有员工，不能删除")
+    await db.delete(department)
+    await db.commit()
+    return True
+
+
 async def create_agent(db: AsyncSession, data: AgentCreate) -> Agent:
     model_name = data.model_name or get_default_model()
     _validate_agent_model(data.provider, model_name)
+    await ensure_department(db, data.department)
     agent = Agent(
         name=data.name,
         role=data.role,
@@ -111,6 +206,8 @@ async def update_agent(db: AsyncSession, agent_id: str, data: AgentUpdate) -> Op
     next_model = update_data.get("model_name", agent.model_name)
     if "provider" in update_data or "model_name" in update_data:
         _validate_agent_model(next_provider, next_model)
+    if "department" in update_data and update_data["department"] is not None:
+        await ensure_department(db, update_data["department"])
     for key, value in update_data.items():
         setattr(agent, key, value)
     agent.updated_at = datetime.utcnow()
@@ -242,12 +339,14 @@ async def chat_with_agent(
 
     # Build agent runtime
     tools = get_tools_for_agent(agent)
+    org_context = await build_org_context(db, agent)
     config = AgentConfig(
-        system_prompt=agent.system_prompt,
+        system_prompt=f"{agent.system_prompt}\n\n{org_context}",
         max_iterations=agent.max_iterations,
         provider=agent.provider,
         model_name=agent.model_name,
         tools=tools,
+        agent_id=agent.id,
     )
     try:
         runtime = AgentRuntime(config)
@@ -473,12 +572,14 @@ async def execute_task(task_id: str) -> None:
         await db.commit()
 
         tools = get_tools_for_agent(agent)
+        org_context = await build_org_context(db, agent)
         config = AgentConfig(
-            system_prompt=agent.system_prompt,
+            system_prompt=f"{agent.system_prompt}\n\n{org_context}",
             max_iterations=agent.max_iterations,
             provider=agent.provider,
             model_name=agent.model_name,
             tools=tools,
+            agent_id=agent.id,
         )
 
         full_response = ""

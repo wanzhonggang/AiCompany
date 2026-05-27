@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AgentAtDesk } from '../components/AgentDesk'
-import { getAgents, type Agent } from '../api/client'
+import { CompactAgentDesk } from '../components/AgentDesk'
+import { getAgents, getDepartments, type Agent, type Department } from '../api/client'
 
 const STATUS_LABEL: Record<string, string> = {
   idle: '空闲',
@@ -12,13 +12,16 @@ const STATUS_LABEL: Record<string, string> = {
 
 export function Office({ showToast }: { showToast: (msg: string, type: string) => void }) {
   const [agents, setAgents] = useState<Agent[]>([])
+  const [departments, setDepartments] = useState<Department[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState('all')
 
   const load = useCallback(async (showError = true) => {
     try {
-      setAgents(await getAgents())
+      const [agentData, departmentData] = await Promise.all([getAgents(), getDepartments()])
+      setAgents(agentData)
+      setDepartments(departmentData)
     } catch {
       if (showError) showToast('加载 AI 办公室失败，请确认后端已启动', 'error')
     } finally {
@@ -50,6 +53,30 @@ export function Office({ showToast }: { showToast: (msg: string, type: string) =
     idle: agents.filter(a => a.status === 'idle').length,
     blocked: agents.filter(a => a.status === 'blocked').length,
   }), [agents])
+
+  const groupedByDepartment = useMemo(() => {
+    const groups = departments.map(dept => ({
+      department: dept,
+      agents: filtered.filter(agent => (agent.department || '未分配') === dept.name),
+    }))
+    const knownNames = new Set(departments.map(dept => dept.name))
+    const ungrouped = filtered.filter(agent => !knownNames.has(agent.department || '未分配'))
+    if (ungrouped.length > 0) {
+      groups.push({
+        department: {
+          id: 'ungrouped',
+          name: '未分配',
+          description: '尚未归属到正式部门的 AI 员工。',
+          color: '#64748b',
+          member_count: ungrouped.length,
+          created_at: null,
+          updated_at: null,
+        },
+        agents: ungrouped,
+      })
+    }
+    return groups.filter(group => group.agents.length > 0 || !query.trim())
+  }, [departments, filtered, query])
 
   if (loading) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>加载中...</div>
 
@@ -88,29 +115,37 @@ export function Office({ showToast }: { showToast: (msg: string, type: string) =
         </div>
       </div>
 
-      <div className="office-board">
-        <div className="office-grid office-grid-large">
-          {filtered.map(agent => (
-            <Link key={agent.id} to={`/agents/${agent.id}/chat`} className="office-desk-link">
-              <AgentAtDesk agent={agent} />
-              <div className="office-desk-meta">
-                <div>
-                  <div className="office-desk-name">{agent.name}</div>
-                  <div className="office-desk-role">{agent.role}</div>
-                </div>
-                <span className={`status-badge status-${agent.status}`}>
-                  <span className="status-dot" />
-                  {STATUS_LABEL[agent.status] || agent.status}
-                </span>
+      <div className="office-overview-grid">
+        {groupedByDepartment.map(group => (
+          <section key={group.department.id} className="office-department-frame">
+            <div className="office-department-header">
+              <div>
+                <h2><span style={{ background: group.department.color }} />{group.department.name}</h2>
+                <p>{group.department.description || '暂无部门职责说明'}</p>
               </div>
-            </Link>
-          ))}
-          {filtered.length === 0 && (
-            <div className="empty-state">
-              <div className="empty-text">没有匹配的 AI 员工。</div>
+              <strong>{group.agents.length} 人</strong>
             </div>
-          )}
-        </div>
+            <div className="department-mini-strip">
+                {group.agents.map(agent => (
+                  <Link key={agent.id} to={`/agents/${agent.id}/chat`} className="mini-agent-card">
+                    <CompactAgentDesk agent={agent} />
+                    <div className="mini-agent-name">{agent.name}</div>
+                    <div className="mini-agent-role">{agent.role}</div>
+                    <div className={`mini-agent-status status-${agent.status}`}>
+                      <span className="status-dot" />
+                      {STATUS_LABEL[agent.status] || agent.status}
+                    </div>
+                  </Link>
+                ))}
+                {group.agents.length === 0 && <div className="empty-mini">该部门暂无匹配员工。</div>}
+            </div>
+          </section>
+        ))}
+        {filtered.length === 0 && (
+          <div className="empty-state">
+            <div className="empty-text">没有匹配的 AI 员工。</div>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -349,6 +349,26 @@ export function AgentAtDesk({ agent }: { agent: Agent }) {
   )
 }
 
+export function CompactAgentDesk({ agent }: { agent: Agent }) {
+  const appearance = useMemo(() => getAppearance(agent.id), [agent.id])
+
+  return (
+    <div className={`compact-desk status-${agent.status}`} style={{ '--shirt-color': appearance.shirtColor } as React.CSSProperties}>
+      <div className="compact-monitor">
+        <ScreenContent agent={agent} variant={appearance.screenVariant} />
+      </div>
+      <div className="compact-person">
+        <div className="compact-head" style={{ background: appearance.skinTone }}>
+          <Hair style={appearance.hairStyle} color={appearance.hairColor} />
+          <div className="compact-eyes"><span /><span /></div>
+        </div>
+        <div className="compact-body" style={{ background: appearance.shirtColor }} />
+      </div>
+      <div className="compact-table" />
+    </div>
+  )
+}
+
 export function AgentDeskRow({ agents, limit = 6, title = '🏢 虚拟办公室' }: { agents: Agent[]; limit?: number; title?: string }) {
   const displayAgents = agents.slice(0, limit)
 

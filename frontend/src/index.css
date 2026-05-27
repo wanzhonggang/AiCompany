@@ -262,6 +262,103 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   border-radius: var(--radius);
   padding: 20px;
 }
+.office-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.office-department-frame {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: rgba(15,23,42,0.42);
+  overflow: hidden;
+  min-height: 270px;
+}
+.office-department-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-color);
+  background: linear-gradient(135deg, rgba(255,255,255,0.04), rgba(6,182,212,0.04));
+}
+.office-department-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 0.98rem;
+  margin-bottom: 4px;
+}
+.office-department-header h2 span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px rgba(255,255,255,0.08);
+}
+.office-department-header p {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  max-height: 38px;
+  overflow: hidden;
+}
+.office-department-header strong {
+  color: var(--accent);
+  white-space: nowrap;
+}
+.department-mini-strip {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 116px;
+  gap: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 12px;
+  scrollbar-width: thin;
+}
+.mini-agent-card {
+  min-width: 116px;
+  color: inherit;
+  background: rgba(15,23,42,0.72);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.mini-agent-card:hover {
+  color: inherit;
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.mini-agent-name {
+  margin-top: 6px;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.mini-agent-role {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.mini-agent-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 5px;
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+}
 .office-grid-large { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .office-desk-link {
   display: block;
@@ -395,6 +492,61 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .task-output-full {
   max-height: 240px;
   margin: 0;
+}
+
+/* ---- Departments ---- */
+.department-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 18px;
+}
+.department-card {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 95% 0%, rgba(6,182,212,0.1), transparent 30%),
+    linear-gradient(145deg, var(--bg-secondary), #111827);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+.department-accent {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+}
+.department-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.department-card h2 {
+  font-size: 1.08rem;
+  margin-bottom: 6px;
+}
+.department-card p {
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+}
+.department-members {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-height: 86px;
+  margin-bottom: 16px;
+}
+.color-swatch {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+}
+.color-swatch.active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px var(--accent);
 }
 .split-actions {
   justify-content: space-between;
@@ -1629,6 +1781,110 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .desk-variant-2 .desk-top { background: linear-gradient(180deg, #7f4f24, #4a2d17); }
 .desk-variant-3 .desk-top { background: linear-gradient(180deg, #475569, #273142); }
 
+/* ---- Compact office desks ---- */
+.compact-desk {
+  position: relative;
+  height: 92px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #243044 0 50%, #151c2d 50% 100%);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.compact-desk::before {
+  content: '';
+  position: absolute;
+  left: -10%;
+  right: -10%;
+  bottom: -12px;
+  height: 42px;
+  background: linear-gradient(180deg, #334155, #111827);
+  transform: skewY(-5deg);
+}
+.compact-monitor {
+  position: absolute;
+  top: 9px;
+  left: 50%;
+  width: 54px;
+  height: 34px;
+  transform: translateX(-50%);
+  border: 2px solid #2b3445;
+  border-radius: 4px;
+  background: #020617;
+  overflow: hidden;
+  z-index: 3;
+}
+.compact-monitor .screen-dashboard,
+.compact-monitor .screen-doc,
+.compact-monitor .screen-terminal,
+.compact-monitor .screen-board,
+.compact-monitor .screen-calendar,
+.compact-monitor .screen-code,
+.compact-monitor .screen-game,
+.compact-monitor .screen-error,
+.compact-monitor .screen-success {
+  transform: scale(0.42);
+  transform-origin: top left;
+  width: 238%;
+  height: 238%;
+}
+.compact-person {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  z-index: 2;
+}
+.compact-head {
+  width: 24px;
+  height: 27px;
+  border-radius: 50% 50% 42% 42%;
+  position: relative;
+  margin: 0 auto;
+}
+.compact-head .hair-short,
+.compact-head .hair-medium,
+.compact-head .hair-spiky,
+.compact-head .hair-curly,
+.compact-head .hair-side {
+  transform: scale(0.55);
+  transform-origin: top left;
+}
+.compact-eyes {
+  display: flex;
+  justify-content: center;
+  gap: 5px;
+  padding-top: 11px;
+}
+.compact-eyes span {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #111827;
+}
+.compact-body {
+  width: 24px;
+  height: 18px;
+  border-radius: 7px 7px 0 0;
+  margin: -1px auto 0;
+}
+.compact-table {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  height: 13px;
+  border-radius: 5px;
+  background: linear-gradient(180deg, #7c4a28, #4a2d17);
+  z-index: 4;
+}
+.compact-desk.status-working .compact-body {
+  animation: compactWork 0.8s ease-in-out infinite;
+}
+@keyframes compactWork {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(2px); }
+}
+
 /* Name tag */
 .name-tag {
   position: absolute;
@@ -1756,7 +2012,9 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   .management-toolbar,
   .key-panel,
   .key-input-row,
-  .task-management-row {
+  .task-management-row,
+  .department-grid,
+  .office-overview-grid {
     grid-template-columns: 1fr;
   }
   .row-actions { justify-content: flex-start; }
