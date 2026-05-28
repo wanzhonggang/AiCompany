@@ -1,4 +1,28 @@
-const BASE = '/api';
+﻿const BASE = '/api';
+const TOKEN_KEY = 'ai_employee_token';
+
+function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function getStoredToken(): string | null {
+  return getToken();
+}
+
+export function setToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const token = getToken();
+  const headers = new Headers(init.headers || {});
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return fetch(input, { ...init, headers });
+}
 
 async function parseJsonResponse<T>(response: Response, fallbackMessage: string): Promise<T> {
   if (!response.ok) {
@@ -12,6 +36,23 @@ async function parseJsonResponse<T>(response: Response, fallbackMessage: string)
     throw new Error(message);
   }
   return response.json();
+}
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  role: 'admin' | 'employee';
+  enterprise_id: string;
+  enterprise_name: string;
+  agent_id: string | null;
+  display_name: string;
+}
+
+export interface AuthResult {
+  token: string;
+  user: AuthUser;
+  payment_required: boolean;
+  payment?: Record<string, unknown> | null;
 }
 
 export interface Agent {
@@ -28,6 +69,8 @@ export interface Agent {
   max_iterations: number;
   model_name: string;
   tool_count: number;
+  employee_username: string | null;
+  employee_init_password: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -49,6 +92,28 @@ export interface LLMConfig {
   default_provider: string;
   default_model: string;
   last_model_refresh_at?: string | null;
+}
+
+export interface AdminAccount {
+  id: string;
+  username: string;
+  display_name: string;
+  enabled: boolean;
+  created_at: string | null;
+}
+
+export interface OperationLog {
+  id: string;
+  actor_username: string;
+  actor_role: string;
+  actor_agent_id: string | null;
+  actor_agent_name: string;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  target_name: string;
+  detail: string;
+  created_at: string | null;
 }
 
 export interface Stats {
@@ -122,24 +187,147 @@ export interface TaskCreateInput {
 
 export type TaskUpdateInput = Partial<TaskCreateInput>;
 
+export interface AgentProfile {
+  agent_id: string;
+  mission: string;
+  responsibilities: string;
+  daily_tasks: string;
+  sop: string;
+  account_notes: string;
+  communication_rules: string;
+  approval_rules: string;
+  work_style: string;
+  updated_at: string | null;
+}
+
+export type AgentProfileInput = Omit<AgentProfile, 'agent_id' | 'updated_at'>;
+
+export interface AgentRoutine {
+  id: string;
+  agent_id: string;
+  title: string;
+  description: string;
+  schedule_type: 'daily' | 'weekly' | 'monthly' | 'cron';
+  schedule_time: string;
+  cron_expression: string | null;
+  enabled: boolean;
+  save_conversation: boolean;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export type AgentRoutineInput = {
+  title: string;
+  description?: string;
+  schedule_type?: 'daily' | 'weekly' | 'monthly' | 'cron';
+  schedule_time?: string;
+  cron_expression?: string | null;
+  enabled?: boolean;
+  save_conversation?: boolean;
+  next_run_at?: string | null;
+};
+
+export interface AgentIntegration {
+  id: string;
+  agent_id: string;
+  provider: 'feishu' | 'wecom' | 'qq' | 'wechat' | 'browser' | 'other';
+  name: string;
+  account_label: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  last_test_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export type AgentIntegrationInput = {
+  provider: 'feishu' | 'wecom' | 'qq' | 'wechat' | 'browser' | 'other';
+  name: string;
+  account_label?: string;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+};
+
+// ---- Auth ----
+export async function registerEnterprise(data: {
+  enterprise_name: string;
+  admin_username: string;
+  admin_password: string;
+  plan: 'trial' | 'formal';
+  billing_period: 'monthly' | 'yearly';
+  payment_method: 'wechat' | 'alipay';
+}): Promise<AuthResult> {
+  const r = await apiFetch(`${BASE}/auth/register-enterprise`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<AuthResult>(r, '企业注册失败');
+}
+
+export async function login(data: { username: string; password: string }): Promise<AuthResult> {
+  const r = await apiFetch(`${BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<AuthResult>(r, '登录失败');
+}
+
+export async function getMe(): Promise<AuthUser> {
+  const r = await apiFetch(`${BASE}/auth/me`);
+  return parseJsonResponse<AuthUser>(r, '获取当前用户失败');
+}
+
+export async function changeMyPassword(oldPassword: string, newPassword: string): Promise<void> {
+  const r = await apiFetch(`${BASE}/auth/password`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+  });
+  await parseJsonResponse<{ ok: boolean }>(r, '修改密码失败');
+}
+
+// ---- Admins / Audit ----
+export async function getAdmins(): Promise<AdminAccount[]> {
+  const r = await apiFetch(`${BASE}/admins`);
+  return parseJsonResponse<AdminAccount[]>(r, '加载管理员失败');
+}
+
+export async function createAdmin(data: { username: string; password: string; display_name?: string }): Promise<AdminAccount> {
+  const r = await apiFetch(`${BASE}/admins`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<AdminAccount>(r, '创建管理员失败');
+}
+
+export async function getOperationLogs(limit = 200): Promise<OperationLog[]> {
+  const r = await apiFetch(`${BASE}/audit/logs?limit=${limit}`);
+  return parseJsonResponse<OperationLog[]>(r, '加载操作记录失败');
+}
+
 // ---- Agents ----
 export async function getStats(): Promise<Stats> {
-  const r = await fetch(`${BASE}/agents/stats`);
+  const r = await apiFetch(`${BASE}/agents/stats`);
   return parseJsonResponse<Stats>(r, 'Failed to load stats');
 }
 
 export async function getAgents(): Promise<Agent[]> {
-  const r = await fetch(`${BASE}/agents`);
+  const r = await apiFetch(`${BASE}/agents`);
   return parseJsonResponse<Agent[]>(r, 'Failed to load agents');
 }
 
 export async function getAgent(id: string): Promise<Agent> {
-  const r = await fetch(`${BASE}/agents/${id}`);
+  const r = await apiFetch(`${BASE}/agents/${id}`);
   return parseJsonResponse<Agent>(r, 'Failed to load agent');
 }
 
 export async function createAgent(data: Partial<Agent>): Promise<Agent> {
-  const r = await fetch(`${BASE}/agents`, {
+  const r = await apiFetch(`${BASE}/agents`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -148,7 +336,7 @@ export async function createAgent(data: Partial<Agent>): Promise<Agent> {
 }
 
 export async function updateAgent(id: string, data: Partial<Agent>): Promise<Agent> {
-  const r = await fetch(`${BASE}/agents/${id}`, {
+  const r = await apiFetch(`${BASE}/agents/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -157,18 +345,27 @@ export async function updateAgent(id: string, data: Partial<Agent>): Promise<Age
 }
 
 export async function deleteAgent(id: string): Promise<void> {
-  const r = await fetch(`${BASE}/agents/${id}`, { method: 'DELETE' });
+  const r = await apiFetch(`${BASE}/agents/${id}`, { method: 'DELETE' });
   if (!r.ok) throw new Error('Failed to delete agent');
+}
+
+export async function updateEmployeePassword(agentId: string, newPassword: string): Promise<{ username?: string | null }> {
+  const r = await apiFetch(`${BASE}/agents/${agentId}/employee-password`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ new_password: newPassword }),
+  });
+  return parseJsonResponse<{ ok: boolean; username?: string | null }>(r, '修改员工密码失败');
 }
 
 // ---- Departments ----
 export async function getDepartments(): Promise<Department[]> {
-  const r = await fetch(`${BASE}/departments`);
+  const r = await apiFetch(`${BASE}/departments`);
   return parseJsonResponse<Department[]>(r, 'Failed to load departments');
 }
 
 export async function createDepartment(data: Partial<Department>): Promise<Department> {
-  const r = await fetch(`${BASE}/departments`, {
+  const r = await apiFetch(`${BASE}/departments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -177,7 +374,7 @@ export async function createDepartment(data: Partial<Department>): Promise<Depar
 }
 
 export async function updateDepartment(id: string, data: Partial<Department>): Promise<Department> {
-  const r = await fetch(`${BASE}/departments/${id}`, {
+  const r = await apiFetch(`${BASE}/departments/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -186,7 +383,7 @@ export async function updateDepartment(id: string, data: Partial<Department>): P
 }
 
 export async function deleteDepartment(id: string): Promise<void> {
-  const r = await fetch(`${BASE}/departments/${id}`, { method: 'DELETE' });
+  const r = await apiFetch(`${BASE}/departments/${id}`, { method: 'DELETE' });
   await parseJsonResponse<{ ok: boolean }>(r, 'Failed to delete department');
 }
 
@@ -202,7 +399,7 @@ export function chatWithAgent(
 ): AbortController {
   const controller = new AbortController();
 
-  fetch(`${BASE}/chat/${agentId}`, {
+  apiFetch(`${BASE}/chat/${agentId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, conversation_id: conversationId, save_conversation: saveConversation }),
@@ -251,12 +448,12 @@ export function chatWithAgent(
 }
 
 export async function getConversations(agentId: string): Promise<Conversation[]> {
-  const r = await fetch(`${BASE}/chat/conversations/${agentId}`);
+  const r = await apiFetch(`${BASE}/chat/conversations/${agentId}`);
   return parseJsonResponse<Conversation[]>(r, 'Failed to load conversations');
 }
 
 export async function renameConversation(convId: string, title: string): Promise<void> {
-  const r = await fetch(`${BASE}/chat/conversations/${convId}/rename`, {
+  const r = await apiFetch(`${BASE}/chat/conversations/${convId}/rename`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title }),
@@ -265,7 +462,7 @@ export async function renameConversation(convId: string, title: string): Promise
 }
 
 export async function deleteConversation(convId: string): Promise<void> {
-  const r = await fetch(`${BASE}/chat/conversations/${convId}`, { method: 'DELETE' });
+  const r = await apiFetch(`${BASE}/chat/conversations/${convId}`, { method: 'DELETE' });
   await parseJsonResponse<{ ok: boolean }>(r, 'Failed to delete conversation');
 }
 
@@ -279,18 +476,18 @@ export interface ChatMessageHistory {
 }
 
 export async function getMessages(convId: string): Promise<ChatMessageHistory[]> {
-  const r = await fetch(`${BASE}/chat/messages/${convId}`);
+  const r = await apiFetch(`${BASE}/chat/messages/${convId}`);
   return parseJsonResponse<ChatMessageHistory[]>(r, 'Failed to load messages');
 }
 
 // ---- Tasks ----
 export async function getAgentTasks(agentId: string): Promise<TaskInfo[]> {
-  const r = await fetch(`${BASE}/tasks/agent/${agentId}`);
+  const r = await apiFetch(`${BASE}/tasks/agent/${agentId}`);
   return parseJsonResponse<TaskInfo[]>(r, 'Failed to load tasks');
 }
 
 export async function createTask(agentId: string, data: TaskCreateInput): Promise<TaskInfo> {
-  const r = await fetch(`${BASE}/tasks/${agentId}`, {
+  const r = await apiFetch(`${BASE}/tasks/${agentId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -299,7 +496,7 @@ export async function createTask(agentId: string, data: TaskCreateInput): Promis
 }
 
 export async function updateTask(taskId: string, data: TaskUpdateInput): Promise<TaskInfo> {
-  const r = await fetch(`${BASE}/tasks/${taskId}`, {
+  const r = await apiFetch(`${BASE}/tasks/${taskId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -308,18 +505,89 @@ export async function updateTask(taskId: string, data: TaskUpdateInput): Promise
 }
 
 export async function deleteTask(taskId: string): Promise<void> {
-  const r = await fetch(`${BASE}/tasks/${taskId}`, { method: 'DELETE' });
+  const r = await apiFetch(`${BASE}/tasks/${taskId}`, { method: 'DELETE' });
   await parseJsonResponse<{ ok: boolean }>(r, 'Failed to delete task');
+}
+
+// ---- Agent memory ----
+export async function getAgentProfile(agentId: string): Promise<AgentProfile> {
+  const r = await apiFetch(`${BASE}/agents/${agentId}/profile`);
+  return parseJsonResponse<AgentProfile>(r, 'Failed to load agent profile');
+}
+
+export async function saveAgentProfile(agentId: string, data: AgentProfileInput): Promise<AgentProfile> {
+  const r = await apiFetch(`${BASE}/agents/${agentId}/profile`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<AgentProfile>(r, 'Failed to save agent profile');
+}
+
+export async function getAgentRoutines(agentId: string): Promise<AgentRoutine[]> {
+  const r = await apiFetch(`${BASE}/agents/${agentId}/routines`);
+  return parseJsonResponse<AgentRoutine[]>(r, 'Failed to load routines');
+}
+
+export async function createAgentRoutine(agentId: string, data: AgentRoutineInput): Promise<AgentRoutine> {
+  const r = await apiFetch(`${BASE}/agents/${agentId}/routines`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<AgentRoutine>(r, 'Failed to create routine');
+}
+
+export async function updateAgentRoutine(agentId: string, routineId: string, data: Partial<AgentRoutineInput>): Promise<AgentRoutine> {
+  const r = await apiFetch(`${BASE}/agents/${agentId}/routines/${routineId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<AgentRoutine>(r, 'Failed to update routine');
+}
+
+export async function deleteAgentRoutine(agentId: string, routineId: string): Promise<void> {
+  const r = await apiFetch(`${BASE}/agents/${agentId}/routines/${routineId}`, { method: 'DELETE' });
+  await parseJsonResponse<{ ok: boolean }>(r, 'Failed to delete routine');
+}
+
+export async function getAgentIntegrations(agentId: string): Promise<AgentIntegration[]> {
+  const r = await apiFetch(`${BASE}/agents/${agentId}/integrations`);
+  return parseJsonResponse<AgentIntegration[]>(r, 'Failed to load integrations');
+}
+
+export async function createAgentIntegration(agentId: string, data: AgentIntegrationInput): Promise<AgentIntegration> {
+  const r = await apiFetch(`${BASE}/agents/${agentId}/integrations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<AgentIntegration>(r, 'Failed to create integration');
+}
+
+export async function updateAgentIntegration(agentId: string, integrationId: string, data: Partial<AgentIntegrationInput>): Promise<AgentIntegration> {
+  const r = await apiFetch(`${BASE}/agents/${agentId}/integrations/${integrationId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<AgentIntegration>(r, 'Failed to update integration');
+}
+
+export async function deleteAgentIntegration(agentId: string, integrationId: string): Promise<void> {
+  const r = await apiFetch(`${BASE}/agents/${agentId}/integrations/${integrationId}`, { method: 'DELETE' });
+  await parseJsonResponse<{ ok: boolean }>(r, 'Failed to delete integration');
 }
 
 // ---- LLM Config ----
 export async function getLLMConfig(): Promise<LLMConfig> {
-  const r = await fetch(`${BASE}/llm/providers`);
+  const r = await apiFetch(`${BASE}/llm/providers`);
   return parseJsonResponse<LLMConfig>(r, 'Failed to load LLM config');
 }
 
 export async function saveProviderApiKey(providerName: string, apiKey: string): Promise<void> {
-  const r = await fetch(`${BASE}/llm/providers/${providerName}/api-key`, {
+  const r = await apiFetch(`${BASE}/llm/providers/${providerName}/api-key`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ api_key: apiKey }),
@@ -328,7 +596,7 @@ export async function saveProviderApiKey(providerName: string, apiKey: string): 
 }
 
 export async function setDefaultModel(provider: string, model: string): Promise<void> {
-  const r = await fetch(`${BASE}/llm/default`, {
+  const r = await apiFetch(`${BASE}/llm/default`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ provider, model }),
@@ -337,12 +605,26 @@ export async function setDefaultModel(provider: string, model: string): Promise<
 }
 
 export async function refreshLLMModels(): Promise<LLMConfig & { updated: Array<Record<string, unknown>> }> {
-  const r = await fetch(`${BASE}/llm/refresh-models`, { method: 'POST' });
+  const r = await apiFetch(`${BASE}/llm/refresh-models`, { method: 'POST' });
   return parseJsonResponse<LLMConfig & { updated: Array<Record<string, unknown>> }>(r, 'Failed to refresh model list');
+}
+
+export async function addCustomModel(data: {
+  provider: string;
+  name: string;
+  display_name?: string;
+  description?: string;
+}): Promise<LLMConfig & { action: string }> {
+  const r = await apiFetch(`${BASE}/llm/models`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<LLMConfig & { action: string }>(r, 'Failed to add custom model');
 }
 
 // ---- Tools ----
 export async function getTools(): Promise<ToolDef[]> {
-  const r = await fetch(`${BASE}/tools`);
+  const r = await apiFetch(`${BASE}/tools`);
   return parseJsonResponse<ToolDef[]>(r, 'Failed to load tools');
 }

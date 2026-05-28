@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  addCustomModel,
   getLLMConfig,
   refreshLLMModels,
   saveProviderApiKey,
@@ -15,6 +16,13 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [query, setQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
+  const [modelModalOpen, setModelModalOpen] = useState(false)
+  const [modelForm, setModelForm] = useState({
+    provider: '',
+    name: '',
+    display_name: '',
+    description: '',
+  })
 
   const load = useCallback(async () => {
     try {
@@ -93,6 +101,38 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
     }
   }
 
+  const openModelModal = () => {
+    setModelForm({
+      provider: active?.name || providers[0]?.name || '',
+      name: '',
+      display_name: '',
+      description: '',
+    })
+    setModelModalOpen(true)
+  }
+
+  const submitCustomModel = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!modelForm.provider || !modelForm.name.trim()) {
+      showToast('请选择厂商并填写模型名称', 'error')
+      return
+    }
+    try {
+      const result = await addCustomModel({
+        provider: modelForm.provider,
+        name: modelForm.name.trim(),
+        display_name: modelForm.display_name.trim(),
+        description: modelForm.description.trim(),
+      })
+      setConfig(result)
+      setActiveProvider(modelForm.provider)
+      setModelModalOpen(false)
+      showToast(result.action === 'updated' ? '模型已更新' : '模型已添加', 'success')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '添加模型失败', 'error')
+    }
+  }
+
   if (loading) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>加载中...</div>
   if (!config || !active) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>暂无模型配置</div>
 
@@ -103,15 +143,18 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
           <h1 className="page-title">模型管理</h1>
           <div className="office-subtitle">统一维护 LLM 厂商、API Key 和默认模型。</div>
         </div>
-        <button className="btn btn-primary" onClick={refreshModels} disabled={refreshing}>
-          {refreshing ? '更新中...' : '更新所有模型'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-secondary" onClick={openModelModal}>添加模型</button>
+          <button className="btn btn-primary" onClick={refreshModels} disabled={refreshing}>
+            {refreshing ? '更新中...' : '更新所有模型'}
+          </button>
+        </div>
       </div>
 
       <div className="model-overview">
         <div>
           <span>当前默认模型</span>
-          <strong>{config.default_provider} / {config.default_model}</strong>
+          <strong>{config.default_provider && config.default_model ? `${config.default_provider} / ${config.default_model}` : '未配置模型'}</strong>
         </div>
         <div>
           <span>已可用厂商</span>
@@ -167,7 +210,7 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
           <div className="key-panel">
             <div>
               <div className="panel-title">API Key</div>
-              <div className="task-meta">保存到后端本地环境变量：{active.api_key_env}</div>
+              <div className="task-meta">保存到当前企业的独立配置，不会带给其他企业。</div>
             </div>
             <div className="key-input-row">
               <input
@@ -205,6 +248,72 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
           </div>
         </section>
       </div>
+
+      {modelModalOpen && (
+        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setModelModalOpen(false) }}>
+          <div className="modal-content model-add-modal">
+            <div className="modal-header">
+              <div>
+                <h3 className="modal-title">手动添加模型</h3>
+                <div className="task-meta">用于厂商接口没有返回、但你确认账号可调用的模型。</div>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setModelModalOpen(false)}>关闭</button>
+            </div>
+            <form onSubmit={submitCustomModel} className="task-form">
+              <label>
+                <span>模型厂商</span>
+                <select
+                  className="form-select"
+                  value={modelForm.provider}
+                  onChange={e => setModelForm({ ...modelForm, provider: e.target.value })}
+                  required
+                >
+                  {providers.map(provider => (
+                    <option key={provider.name} value={provider.name}>
+                      {provider.display_name}（{provider.status === 'ready' ? '可运行' : '待适配'}）
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>模型名称 / ID</span>
+                <input
+                  className="form-input"
+                  value={modelForm.name}
+                  onChange={e => setModelForm({ ...modelForm, name: e.target.value })}
+                  placeholder="例如 deepseek-v4-pro、gpt-4.1、Qwen/Qwen3-32B"
+                  required
+                />
+              </label>
+              <label>
+                <span>展示名称</span>
+                <input
+                  className="form-input"
+                  value={modelForm.display_name}
+                  onChange={e => setModelForm({ ...modelForm, display_name: e.target.value })}
+                  placeholder="留空则自动从模型 ID 生成"
+                />
+              </label>
+              <label>
+                <span>说明</span>
+                <textarea
+                  className="form-textarea"
+                  value={modelForm.description}
+                  onChange={e => setModelForm({ ...modelForm, description: e.target.value })}
+                  placeholder="例如：客户自有账号支持的最新模型，适合长文本或低成本任务"
+                />
+              </label>
+              <div className="model-add-note">
+                添加后会出现在该厂商模型列表和 AI 员工模型选择里。是否能实际调用，仍取决于该厂商 API Key 权限和模型 ID 是否正确。
+              </div>
+              <div className="modal-actions">
+                <button type="button" className="btn btn-secondary" onClick={() => setModelModalOpen(false)}>取消</button>
+                <button type="submit" className="btn btn-primary">保存模型</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

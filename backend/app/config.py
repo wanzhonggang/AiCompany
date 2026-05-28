@@ -85,17 +85,28 @@ def get_provider(name: str | None = None) -> dict | None:
     return None
 
 
+def get_provider_config(name: str | None = None) -> dict | None:
+    """Get provider config without attaching any global API key."""
+    config = load_llm_config()
+    if not name:
+        name = config.get("default_provider", "")
+    for p in config.get("providers", []):
+        if p["name"] == name:
+            return dict(p)
+    return None
+
+
 def get_default_model() -> str:
     return load_llm_config().get("default_model", "deepseek-chat")
 
 
-def get_providers_safe() -> list[dict]:
+def get_providers_safe(configured_names: set[str] | None = None) -> list[dict]:
     """Return provider list with API keys stripped for frontend display."""
     config = load_llm_config()
     safe = []
     for p in config.get("providers", []):
         env_key = p.get("api_key_env") or f"{p['name'].upper()}_API_KEY"
-        has_key = bool(get_env_value(env_key))
+        has_key = p["name"] in configured_names if configured_names is not None else bool(get_env_value(env_key))
         safe.append({
             "name": p["name"],
             "display_name": p["display_name"],

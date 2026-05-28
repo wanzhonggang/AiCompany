@@ -1,17 +1,29 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
-from fastapi import FastAPI, HTTPException
+from datetime import datetime, timedelta
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
-from .config import get_provider, get_providers_safe, load_llm_config, save_llm_config, set_env_value
-from .database import init_db, async_session
-from .routers import agents, chat, tools, tasks, departments
-from .models import Agent, AgentToolBinding, ToolDefinition
-from .services import BUILTIN_TOOLS, ensure_department, execute_task, get_assigned_immediate_tasks, get_due_scheduled_tasks
+from .auth import get_current_user, require_admin, hash_password
+from .config import get_providers_safe, load_llm_config, save_llm_config
+from .database import init_db, async_session, get_db
+from .routers import agents, chat, tools, tasks, departments, agent_memory, auth, admins, audit
+from .models import Agent, AgentToolBinding, ToolDefinition, Enterprise, UserAccount, Department, EnterpriseLLMKey
+from .services import (
+    BUILTIN_TOOLS,
+    ensure_department,
+    execute_task,
+    get_assigned_immediate_tasks,
+    get_due_scheduled_tasks,
+    get_due_routines,
+    materialize_routine_task,
+    get_enterprise_llm_key,
+    log_operation,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,8 +49,13 @@ async def scheduled_task_loop():
             async with async_session() as db:
                 due_tasks = await get_due_scheduled_tasks(db)
                 assigned_tasks = await get_assigned_immediate_tasks(db)
+                due_routines = await get_due_routines(db)
             for task in [*due_tasks, *assigned_tasks]:
                 asyncio.create_task(execute_task(task.id))
+            for routine in due_routines:
+                task_id = await materialize_routine_task(routine.id)
+                if task_id:
+                    asyncio.create_task(execute_task(task_id))
         except Exception as e:
             logger.warning("Scheduled task loop failed: %s", e)
         await asyncio.sleep(30)
@@ -47,7 +64,29 @@ async def scheduled_task_loop():
 async def seed_data():
     """Seed initial agents and keep builtin tool bindings in sync."""
     async with async_session() as db:
-        from sqlalchemy import select, func
+        from sqlalchemy import select, func, update
+
+        enterprise = (await db.execute(select(Enterprise).order_by(Enterprise.created_at.asc()))).scalars().first()
+        if not enterprise:
+            enterprise = Enterprise(
+                name="默认企业",
+                plan="formal",
+                billing_period="monthly",
+                payment_status="active",
+                expires_at=datetime.utcnow() + timedelta(days=3650),
+            )
+            db.add(enterprise)
+            await db.flush()
+
+            admin = UserAccount(
+                enterprise_id=enterprise.id,
+                username="admin",
+                password_hash=hash_password("admin123"),
+                role="admin",
+                display_name="默认管理员",
+            )
+            db.add(admin)
+            logger.info("Created default admin account: admin / admin123")
 
         existing_tool_names = set((await db.execute(select(ToolDefinition.name))).scalars().all())
         for tool in BUILTIN_TOOLS:
@@ -77,7 +116,7 @@ async def seed_data():
             ("综合管理部", "负责行政、文档、流程和日程协同。", "#8b5cf6"),
         ]
         for name, description, color in default_departments:
-            await ensure_department(db, name, description, color)
+            await ensure_department(db, name, description, color, enterprise_id=enterprise.id)
 
         if agent_count == 0:
             logger.info("Seeding initial data...")
@@ -128,12 +167,24 @@ async def seed_data():
             ]
 
             for ad in agents_data:
-                db.add(Agent(**ad))
+                db.add(Agent(**ad, enterprise_id=enterprise.id))
             await db.flush()
+        else:
+            # Backfill enterprise ownership for existing single-tenant data
+            await db.execute(
+                update(Agent)
+                .where(Agent.enterprise_id.is_(None))
+                .values(enterprise_id=enterprise.id)
+            )
+            await db.execute(
+                update(Department)
+                .where(Department.enterprise_id.is_(None))
+                .values(enterprise_id=enterprise.id)
+            )
 
-        agents = (await db.execute(select(Agent))).scalars().all()
+        agents = (await db.execute(select(Agent).where(Agent.enterprise_id == enterprise.id))).scalars().all()
         for agent in agents:
-            await ensure_department(db, agent.department or "未分配")
+            await ensure_department(db, agent.department or "未分配", enterprise_id=enterprise.id)
         existing_bindings = {
             (agent_id, tool_name)
             for agent_id, tool_name in (await db.execute(
@@ -170,6 +221,10 @@ app.include_router(chat.router)
 app.include_router(tools.router)
 app.include_router(tasks.router)
 app.include_router(departments.router)
+app.include_router(agent_memory.router)
+app.include_router(auth.router)
+app.include_router(admins.router)
+app.include_router(audit.router)
 
 
 @app.get("/api/health")
@@ -177,16 +232,37 @@ async def health():
     return {"status": "ok", "name": "AI Employee Platform"}
 
 
-@app.get("/api/llm/providers")
-async def list_providers():
-    """Return available LLM providers and models (API keys redacted)."""
+async def _enterprise_configured_providers(db, enterprise_id: str) -> set[str]:
+    rows = (await db.execute(
+        select(EnterpriseLLMKey.provider).where(EnterpriseLLMKey.enterprise_id == enterprise_id)
+    )).scalars().all()
+    return set(rows)
+
+
+async def _enterprise_llm_payload(db, current_user: UserAccount) -> dict:
     config = load_llm_config()
+    configured = await _enterprise_configured_providers(db, current_user.enterprise_id)
+    enterprise = await db.get(Enterprise, current_user.enterprise_id)
+    default_provider = enterprise.default_provider if enterprise else ""
+    default_model = enterprise.default_model if enterprise else ""
+    if default_provider not in configured:
+        default_provider = ""
+        default_model = ""
     return {
-        "providers": get_providers_safe(),
-        "default_provider": config.get("default_provider", ""),
-        "default_model": config.get("default_model", ""),
+        "providers": get_providers_safe(configured),
+        "default_provider": default_provider,
+        "default_model": default_model,
         "last_model_refresh_at": config.get("last_model_refresh_at"),
     }
+
+
+@app.get("/api/llm/providers")
+async def list_providers(
+    current_user: UserAccount = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Return available LLM providers and models (API keys redacted)."""
+    return await _enterprise_llm_payload(db, current_user)
 
 
 class ProviderKeyRequest(BaseModel):
@@ -196,6 +272,13 @@ class ProviderKeyRequest(BaseModel):
 class DefaultModelRequest(BaseModel):
     provider: str = Field(..., min_length=1, max_length=50)
     model: str = Field(..., min_length=1, max_length=150)
+
+
+class CustomModelRequest(BaseModel):
+    provider: str = Field(..., min_length=1, max_length=50)
+    name: str = Field(..., min_length=1, max_length=150)
+    display_name: str = Field(default="", max_length=150)
+    description: str = Field(default="", max_length=500)
 
 
 async def _validate_openai_compatible_key(provider: dict, api_key: str) -> tuple[bool, str]:
@@ -233,7 +316,12 @@ async def _validate_openai_compatible_key(provider: dict, api_key: str) -> tuple
 
 
 @app.post("/api/llm/providers/{provider_name}/api-key")
-async def save_provider_api_key(provider_name: str, data: ProviderKeyRequest):
+async def save_provider_api_key(
+    provider_name: str,
+    data: ProviderKeyRequest,
+    current_user: UserAccount = Depends(require_admin),
+    db=Depends(get_db),
+):
     config = load_llm_config()
     provider = next((p for p in config.get("providers", []) if p.get("name") == provider_name), None)
     if not provider:
@@ -244,13 +332,39 @@ async def save_provider_api_key(provider_name: str, data: ProviderKeyRequest):
     if not ok:
         raise HTTPException(status_code=400, detail=f"API Key 校验失败：{message}")
 
-    env_key = provider.get("api_key_env") or f"{provider_name.upper()}_API_KEY"
-    set_env_value(env_key, api_key)
+    result = await db.execute(
+        select(EnterpriseLLMKey)
+        .where(EnterpriseLLMKey.enterprise_id == current_user.enterprise_id)
+        .where(EnterpriseLLMKey.provider == provider_name)
+    )
+    key = result.scalar_one_or_none()
+    if key:
+        key.api_key = api_key
+        key.updated_at = datetime.utcnow()
+    else:
+        db.add(EnterpriseLLMKey(
+            enterprise_id=current_user.enterprise_id,
+            provider=provider_name,
+            api_key=api_key,
+        ))
+
+    enterprise = await db.get(Enterprise, current_user.enterprise_id)
+    if enterprise and not enterprise.default_provider:
+        first_model = next((m.get("name") for m in provider.get("models", []) if m.get("name")), "")
+        enterprise.default_provider = provider_name
+        enterprise.default_model = first_model
+        enterprise.updated_at = datetime.utcnow()
+    await log_operation(db, current_user, "保存模型Key", "model_provider", provider_name, provider.get("display_name", provider_name))
+    await db.commit()
     return {"ok": True, "message": message}
 
 
 @app.patch("/api/llm/default")
-async def set_default_model(data: DefaultModelRequest):
+async def set_default_model(
+    data: DefaultModelRequest,
+    current_user: UserAccount = Depends(require_admin),
+    db=Depends(get_db),
+):
     config = load_llm_config()
     provider = next((p for p in config.get("providers", []) if p.get("name") == data.provider), None)
     if not provider:
@@ -258,10 +372,60 @@ async def set_default_model(data: DefaultModelRequest):
     model_names = {m.get("name") for m in provider.get("models", [])}
     if data.model not in model_names:
         raise HTTPException(status_code=404, detail="Model not found")
-    config["default_provider"] = data.provider
-    config["default_model"] = data.model
-    save_llm_config(config)
+    if not await get_enterprise_llm_key(db, current_user.enterprise_id, data.provider):
+        raise HTTPException(status_code=400, detail="请先配置该厂商 API Key")
+    enterprise = await db.get(Enterprise, current_user.enterprise_id)
+    if not enterprise:
+        raise HTTPException(status_code=404, detail="Enterprise not found")
+    enterprise.default_provider = data.provider
+    enterprise.default_model = data.model
+    enterprise.updated_at = datetime.utcnow()
+    await log_operation(db, current_user, "设置默认模型", "model", data.model, f"{data.provider} / {data.model}")
+    await db.commit()
     return {"ok": True}
+
+
+@app.post("/api/llm/models")
+async def add_custom_model(
+    data: CustomModelRequest,
+    current_user: UserAccount = Depends(require_admin),
+    db=Depends(get_db),
+):
+    config = load_llm_config()
+    provider = next((p for p in config.get("providers", []) if p.get("name") == data.provider), None)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    model_name = data.name.strip()
+    if not model_name:
+        raise HTTPException(status_code=422, detail="模型名称不能为空")
+
+    models = provider.setdefault("models", [])
+    existing = next((m for m in models if m.get("name") == model_name), None)
+    model_data = {
+        "name": model_name,
+        "display_name": data.display_name.strip() or _format_model_name(model_name),
+        "description": data.description.strip() or "用户手动添加的模型",
+        "source": "manual",
+    }
+
+    if existing:
+        existing.update(model_data)
+        action = "updated"
+    else:
+        models.insert(0, model_data)
+        action = "created"
+
+    provider["last_refreshed_at"] = datetime.utcnow().isoformat()
+    save_llm_config(config)
+    await log_operation(db, current_user, "添加模型" if action == "created" else "更新模型", "model", model_name, f"{provider.get('display_name', data.provider)} / {model_name}")
+    await db.commit()
+    payload = await _enterprise_llm_payload(db, current_user)
+    return {
+        "ok": True,
+        "action": action,
+        **payload,
+    }
 
 
 def _format_model_name(model_id: str) -> str:
@@ -300,7 +464,10 @@ def _merge_provider_models(provider: dict, fetched_ids: list[str]) -> int:
 
 
 @app.post("/api/llm/refresh-models")
-async def refresh_models():
+async def refresh_models(
+    current_user: UserAccount = Depends(require_admin),
+    db=Depends(get_db),
+):
     """Refresh model choices from configured OpenAI-compatible providers."""
     config = load_llm_config()
     updated: list[dict] = []
@@ -313,8 +480,7 @@ async def refresh_models():
             if not base_url:
                 continue
 
-            runtime_provider = get_provider(provider.get("name"))
-            api_key = runtime_provider.get("api_key") if runtime_provider else ""
+            api_key = await get_enterprise_llm_key(db, current_user.enterprise_id, provider.get("name"))
             if not api_key:
                 updated.append({
                     "provider": provider.get("name"),
@@ -357,11 +523,11 @@ async def refresh_models():
 
     config["last_model_refresh_at"] = datetime.utcnow().isoformat()
     save_llm_config(config)
+    await log_operation(db, current_user, "更新模型列表", "model_provider", None, "全部模型厂商")
+    await db.commit()
+    payload = await _enterprise_llm_payload(db, current_user)
     return {
         "ok": True,
         "updated": updated,
-        "providers": get_providers_safe(),
-        "default_provider": config.get("default_provider", ""),
-        "default_model": config.get("default_model", ""),
-        "last_model_refresh_at": config.get("last_model_refresh_at"),
+        **payload,
     }

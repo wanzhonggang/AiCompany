@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { getAgents, deleteAgent, createAgent, updateAgent, getLLMConfig, getDepartments, type Agent, type Department, type LLMConfig } from '../api/client'
+import { getAgents, deleteAgent, createAgent, updateAgent, updateEmployeePassword, getLLMConfig, getDepartments, type Agent, type Department, type LLMConfig } from '../api/client'
 
 const AVATAR_COLORS = [
   "#6366f1","#8b5cf6","#06b6d4","#10b981","#f59e0b",
@@ -16,6 +16,9 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Agent | null>(null)
+  const [passwordAgent, setPasswordAgent] = useState<Agent | null>(null)
+  const [employeePassword, setEmployeePassword] = useState('')
+  const [passwordMode, setPasswordMode] = useState<'initial' | 'edit'>('edit')
   const [searchQuery, setSearchQuery] = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
 
@@ -94,7 +97,7 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
     e.preventDefault()
     if (!formName.trim() || !formRole.trim()) return
     if (!formProvider || !formModel) {
-      showToast('没有可用模型，请先到模型管理配置 API Key', 'error')
+      showToast('未选择模型，不可新增AI员工', 'error')
       return
     }
 
@@ -108,13 +111,16 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
         } as Partial<Agent>)
         showToast('员工信息已更新', 'success')
       } else {
-        await createAgent({
+        const created = await createAgent({
           name: formName, role: formRole, department: formDept,
           skills: formSkills.split(',').map(s => s.trim()).filter(Boolean),
           system_prompt: formPrompt, avatar_color: formColor,
           provider: formProvider, model_name: formModel,
         } as Partial<Agent>)
-        showToast('AI 员工已添加', 'success')
+        setPasswordAgent(created)
+        setPasswordMode('initial')
+        setEmployeePassword('')
+        showToast('AI 员工已添加，请设置员工登录密码', 'success')
       }
       setShowForm(false)
       load()
@@ -131,6 +137,24 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
       load()
     } catch {
       showToast('删除失败', 'error')
+    }
+  }
+
+  const submitEmployeePassword = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!passwordAgent || employeePassword.length < 6) {
+      showToast('密码至少 6 位', 'error')
+      return
+    }
+    try {
+      await updateEmployeePassword(passwordAgent.id, employeePassword)
+      showToast(passwordMode === 'initial' ? '员工密码已设置，可以登录了' : '员工密码已更新', 'success')
+      setPasswordAgent(null)
+      setEmployeePassword('')
+      setPasswordMode('edit')
+      load(false)
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '修改员工密码失败', 'error')
     }
   }
 
@@ -187,6 +211,7 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
               <div className="card-name">{a.name}</div>
               <div className="card-role">{a.role}</div>
               <div className="card-dept">{a.department || '—'}</div>
+              <div className="card-dept">账号：{a.employee_username || '未生成'}</div>
               <span className={`status-badge status-${a.status}`}>
                 <span className="status-dot" />{STATUS_MAP[a.status] || a.status}
               </span>
@@ -199,6 +224,11 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
               </div>
               <div className="card-actions">
                 <Link to={`/agents/${a.id}/chat`} className="btn btn-primary btn-sm">进入工作台</Link>
+                <button className="btn btn-secondary btn-sm" onClick={() => {
+                  setPasswordAgent(a)
+                  setPasswordMode('edit')
+                  setEmployeePassword('')
+                }}>改密码</button>
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', alignSelf: 'center' }}>
                   {a.tool_count} 个工具
                 </span>
@@ -267,7 +297,7 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
                 </div>
                 {availableProviders.length === 0 && (
                   <div className="form-help-error">
-                    当前没有已配置 API Key 的模型。请先进入「模型管理」填写并通过校验后再创建或编辑员工。
+                    当前企业未配置可用模型。请先进入「模型管理」填写并通过 API Key 校验后再创建 AI 员工。
                   </div>
                 )}
                 <div>
@@ -283,9 +313,43 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
                   </div>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
-                  <button type="button" className="btn btn-secondary" onClick={() => setShowForm(false)}>取消</button>
-                  <button type="submit" className="btn btn-primary" disabled={availableProviders.length === 0}>{editing ? '保存修改' : '确认添加'}</button>
+                  {availableProviders.length > 0 && <button type="button" className="btn btn-secondary" onClick={() => setShowForm(false)}>取消</button>}
+                  <button type="submit" className="btn btn-primary">{editing ? '保存修改' : '确认添加'}</button>
                 </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {passwordAgent && (
+        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setPasswordAgent(null) }}>
+          <div className="modal-content" style={{ maxWidth: 420 }}>
+            <div className="modal-header">
+              <h3 className="modal-title">{passwordMode === 'initial' ? '设置员工登录密码' : '修改员工密码'}</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setPasswordAgent(null)}>关闭</button>
+            </div>
+            <form onSubmit={submitEmployeePassword} className="task-form">
+              <div className="task-meta">账号不可修改：{passwordAgent.employee_username || '未生成'}</div>
+              {passwordMode === 'initial' && (
+                <div className="form-help-error" style={{ borderColor: 'rgba(6,182,212,0.25)', background: 'rgba(6,182,212,0.08)', color: 'var(--text-secondary)' }}>
+                  请在这里设置员工初始密码。设置完成后，员工就可以用上面的账号和这个密码从“员工登录”入口进入。
+                </div>
+              )}
+              <label>
+                <span>新密码</span>
+                <input
+                  className="form-input"
+                  type="password"
+                  value={employeePassword}
+                  onChange={e => setEmployeePassword(e.target.value)}
+                  placeholder="至少 6 位"
+                  autoFocus
+                />
+              </label>
+              <div className="modal-actions">
+                <button type="button" className="btn btn-secondary" onClick={() => setPasswordAgent(null)}>取消</button>
+                <button type="submit" className="btn btn-primary">{passwordMode === 'initial' ? '设置并启用' : '保存密码'}</button>
               </div>
             </form>
           </div>

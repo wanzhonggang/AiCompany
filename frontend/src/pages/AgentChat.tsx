@@ -2,16 +2,30 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import {
   chatWithAgent,
+  createAgentIntegration,
+  createAgentRoutine,
   createTask,
+  deleteAgentIntegration,
+  deleteAgentRoutine,
   deleteConversation,
   deleteTask,
   getAgent,
+  getAgentIntegrations,
+  getAgentProfile,
+  getAgentRoutines,
   getAgentTasks,
   getConversations,
   getMessages,
   renameConversation,
+  saveAgentProfile,
+  updateAgentIntegration,
+  updateAgentRoutine,
   updateTask,
   type Agent,
+  type AgentIntegration,
+  type AgentProfile,
+  type AgentProfileInput,
+  type AgentRoutine,
   type ChatMessageHistory,
   type Conversation,
   type TaskInfo,
@@ -33,6 +47,26 @@ type TaskFormState = {
   repeat: 'none' | 'daily' | 'weekly'
   priority: string
   save_conversation: boolean
+}
+
+type WorkspaceTab = 'chat' | 'profile' | 'routines' | 'integrations'
+
+type RoutineFormState = {
+  title: string
+  description: string
+  schedule_type: 'daily' | 'weekly' | 'monthly' | 'cron'
+  schedule_time: string
+  cron_expression: string
+  enabled: boolean
+  save_conversation: boolean
+}
+
+type IntegrationFormState = {
+  provider: 'feishu' | 'wecom' | 'qq' | 'wechat' | 'browser' | 'other'
+  name: string
+  account_label: string
+  configText: string
+  enabled: boolean
 }
 
 const STATUS_MAP: Record<string, string> = {
@@ -57,6 +91,33 @@ const REPEAT_LABEL: Record<string, string> = {
   weekly: '每周',
 }
 
+const ROUTINE_LABEL: Record<string, string> = {
+  daily: '每天',
+  weekly: '每周',
+  monthly: '每月',
+  cron: 'Cron',
+}
+
+const INTEGRATION_LABEL: Record<string, string> = {
+  feishu: '飞书',
+  wecom: '企业微信',
+  qq: 'QQ',
+  wechat: '微信',
+  browser: '浏览器',
+  other: '其他',
+}
+
+const emptyProfile: AgentProfileInput = {
+  mission: '',
+  responsibilities: '',
+  daily_tasks: '',
+  sop: '',
+  account_notes: '',
+  communication_rules: '',
+  approval_rules: '',
+  work_style: '',
+}
+
 function toDatetimeLocal(value: Date) {
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}`
@@ -72,7 +133,13 @@ function displayTime(value: string | null | undefined) {
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
 }
 
-export function AgentChat({ showToast }: { showToast: (msg: string, type: string) => void }) {
+export function AgentChat({
+  showToast,
+  readOnlyProfile = false,
+}: {
+  showToast: (msg: string, type: string) => void
+  readOnlyProfile?: boolean
+}) {
   const { id } = useParams<{ id: string }>()
   const [agent, setAgent] = useState<Agent | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -81,12 +148,22 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [convs, setConvs] = useState<Conversation[]>([])
   const [tasks, setTasks] = useState<TaskInfo[]>([])
+  const [profile, setProfile] = useState<AgentProfile | null>(null)
+  const [profileForm, setProfileForm] = useState<AgentProfileInput>(emptyProfile)
+  const [routines, setRoutines] = useState<AgentRoutine[]>([])
+  const [integrations, setIntegrations] = useState<AgentIntegration[]>([])
   const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('chat')
   const [saveConversation, setSaveConversation] = useState(true)
   const [editingTitle, setEditingTitle] = useState<string | null>(null)
   const [titleInput, setTitleInput] = useState('')
   const [taskModalOpen, setTaskModalOpen] = useState(false)
   const [selectedTask, setSelectedTask] = useState<TaskInfo | null>(null)
+  const [selectedRoutine, setSelectedRoutine] = useState<AgentRoutine | null>(null)
+  const [selectedIntegration, setSelectedIntegration] = useState<AgentIntegration | null>(null)
+  const [routineModalOpen, setRoutineModalOpen] = useState(false)
+  const [integrationModalOpen, setIntegrationModalOpen] = useState(false)
+  const [draftConversation, setDraftConversation] = useState(false)
   const [taskForm, setTaskForm] = useState<TaskFormState>({
     title: '',
     description: '',
@@ -105,8 +182,25 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
     priority: 'normal',
     save_conversation: true,
   })
+  const [routineForm, setRoutineForm] = useState<RoutineFormState>({
+    title: '',
+    description: '',
+    schedule_type: 'daily',
+    schedule_time: '09:00',
+    cron_expression: '',
+    enabled: true,
+    save_conversation: true,
+  })
+  const [integrationForm, setIntegrationForm] = useState<IntegrationFormState>({
+    provider: 'feishu',
+    name: '',
+    account_label: '',
+    configText: '{\n  "app_id": "",\n  "secret_env": "FEISHU_APP_SECRET"\n}',
+    enabled: true,
+  })
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const initialConversationLoadedRef = useRef<string | null>(null)
 
   const loadMessages = useCallback(async (convId: string) => {
     try {
@@ -134,7 +228,28 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
       setAgent(agentData)
       setConvs(convData)
       setTasks(taskData)
-      if (!conversationId && convData.length > 0) {
+      if (showError) {
+        const [profileData, routineData, integrationData] = await Promise.all([
+          getAgentProfile(id),
+          getAgentRoutines(id),
+          getAgentIntegrations(id),
+        ])
+        setProfile(profileData)
+        setProfileForm({
+          mission: profileData.mission || '',
+          responsibilities: profileData.responsibilities || '',
+          daily_tasks: profileData.daily_tasks || '',
+          sop: profileData.sop || '',
+          account_notes: profileData.account_notes || '',
+          communication_rules: profileData.communication_rules || '',
+          approval_rules: profileData.approval_rules || '',
+          work_style: profileData.work_style || '',
+        })
+        setRoutines(routineData)
+        setIntegrations(integrationData)
+      }
+      if (!conversationId && !draftConversation && initialConversationLoadedRef.current !== id && convData.length > 0) {
+        initialConversationLoadedRef.current = id
         setConversationId(convData[0].id)
         await loadMessages(convData[0].id)
       }
@@ -143,7 +258,15 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
     } finally {
       setLoading(false)
     }
-  }, [conversationId, id, loadMessages, showToast])
+  }, [conversationId, draftConversation, id, loadMessages, showToast])
+
+  useEffect(() => {
+    initialConversationLoadedRef.current = null
+    setConversationId(null)
+    setMessages([])
+    setDraftConversation(false)
+    setActiveTab('chat')
+  }, [id])
 
   useEffect(() => {
     loadWorkspace()
@@ -173,6 +296,21 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
     })
   }
 
+  const startNewConversation = () => {
+    setConversationId(null)
+    setMessages([])
+    setDraftConversation(true)
+    setActiveTab('chat')
+  }
+
+  const openConversation = async (cid: string | null) => {
+    setConversationId(cid)
+    setDraftConversation(!cid)
+    setActiveTab('chat')
+    if (cid) await loadMessages(cid)
+    else setMessages([])
+  }
+
   const handleDeleteConversation = async () => {
     if (!selectedConversation || sending) return
     if (!confirm(`确定删除对话「${selectedConversation.title}」吗？删除后无法恢复。`)) return
@@ -185,10 +323,10 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
       const nextConv = nextConvs[0] || null
       if (nextConv) {
         setConversationId(nextConv.id)
+        setDraftConversation(false)
         await loadMessages(nextConv.id)
       } else {
-        setConversationId(null)
-        setMessages([])
+        startNewConversation()
       }
 
       if (id) {
@@ -242,6 +380,7 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
             const { conversation_id } = data.data as Record<string, unknown>
             if (saveConversation && conversation_id && !conversationId) {
               setConversationId(conversation_id as string)
+              setDraftConversation(false)
             }
             if (saveConversation) {
               getConversations(id).then(setConvs).catch(() => {})
@@ -351,6 +490,130 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
     }
   }
 
+  const submitProfile = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!id) return
+    try {
+      const saved = await saveAgentProfile(id, profileForm)
+      setProfile(saved)
+      showToast('员工记忆已保存，后续任务会自动带上这些内容', 'success')
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '保存员工记忆失败', 'error')
+    }
+  }
+
+  const openRoutineModal = (routine?: AgentRoutine) => {
+    setSelectedRoutine(routine || null)
+    setRoutineForm(routine ? {
+      title: routine.title,
+      description: routine.description || '',
+      schedule_type: routine.schedule_type,
+      schedule_time: routine.schedule_time || '09:00',
+      cron_expression: routine.cron_expression || '',
+      enabled: routine.enabled,
+      save_conversation: routine.save_conversation,
+    } : {
+      title: '',
+      description: '',
+      schedule_type: 'daily',
+      schedule_time: '09:00',
+      cron_expression: '',
+      enabled: true,
+      save_conversation: true,
+    })
+    setRoutineModalOpen(true)
+  }
+
+  const submitRoutine = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!id || !routineForm.title.trim()) return
+    try {
+      const payload = {
+        title: routineForm.title.trim(),
+        description: routineForm.description.trim(),
+        schedule_type: routineForm.schedule_type,
+        schedule_time: routineForm.schedule_time,
+        cron_expression: routineForm.schedule_type === 'cron' ? routineForm.cron_expression.trim() || null : null,
+        enabled: routineForm.enabled,
+        save_conversation: routineForm.save_conversation,
+      }
+      const saved = selectedRoutine
+        ? await updateAgentRoutine(id, selectedRoutine.id, payload)
+        : await createAgentRoutine(id, payload)
+      setRoutines(prev => selectedRoutine ? prev.map(item => item.id === saved.id ? saved : item) : [saved, ...prev])
+      setRoutineModalOpen(false)
+      showToast(selectedRoutine ? '例行工作已更新' : '例行工作已创建', 'success')
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '保存例行工作失败', 'error')
+    }
+  }
+
+  const handleDeleteRoutine = async (routine: AgentRoutine) => {
+    if (!id || !confirm(`确定删除例行工作「${routine.title}」吗？`)) return
+    try {
+      await deleteAgentRoutine(id, routine.id)
+      setRoutines(prev => prev.filter(item => item.id !== routine.id))
+      showToast('例行工作已删除', 'success')
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '删除例行工作失败', 'error')
+    }
+  }
+
+  const openIntegrationModal = (integration?: AgentIntegration) => {
+    setSelectedIntegration(integration || null)
+    setIntegrationForm(integration ? {
+      provider: integration.provider,
+      name: integration.name,
+      account_label: integration.account_label || '',
+      configText: JSON.stringify(integration.config || {}, null, 2),
+      enabled: integration.enabled,
+    } : {
+      provider: 'feishu',
+      name: '',
+      account_label: '',
+      configText: '{\n  "app_id": "",\n  "secret_env": "FEISHU_APP_SECRET"\n}',
+      enabled: true,
+    })
+    setIntegrationModalOpen(true)
+  }
+
+  const submitIntegration = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!id || !integrationForm.name.trim()) return
+    try {
+      let config: Record<string, unknown> = {}
+      if (integrationForm.configText.trim()) {
+        config = JSON.parse(integrationForm.configText)
+      }
+      const payload = {
+        provider: integrationForm.provider,
+        name: integrationForm.name.trim(),
+        account_label: integrationForm.account_label.trim(),
+        config,
+        enabled: integrationForm.enabled,
+      }
+      const saved = selectedIntegration
+        ? await updateAgentIntegration(id, selectedIntegration.id, payload)
+        : await createAgentIntegration(id, payload)
+      setIntegrations(prev => selectedIntegration ? prev.map(item => item.id === saved.id ? saved : item) : [saved, ...prev])
+      setIntegrationModalOpen(false)
+      showToast(selectedIntegration ? '账号工具已更新' : '账号工具已添加', 'success')
+    } catch (e) {
+      showToast(e instanceof SyntaxError ? '配置 JSON 格式不正确' : e instanceof Error ? e.message : '保存账号工具失败', 'error')
+    }
+  }
+
+  const handleDeleteIntegration = async (integration: AgentIntegration) => {
+    if (!id || !confirm(`确定删除账号工具「${integration.name}」吗？`)) return
+    try {
+      await deleteAgentIntegration(id, integration.id)
+      setIntegrations(prev => prev.filter(item => item.id !== integration.id))
+      showToast('账号工具已删除', 'success')
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '删除账号工具失败', 'error')
+    }
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -381,6 +644,24 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
         <button className="btn btn-primary" onClick={() => setTaskModalOpen(true)}>新建任务</button>
       </div>
 
+      <div className="workspace-tabs">
+        {[
+          ['chat', '对话执行'],
+          ...(!readOnlyProfile ? [['profile', '员工档案']] : []),
+          ['routines', '例行工作'],
+          ['integrations', '账号与工具'],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            className={activeTab === key ? 'active' : ''}
+            onClick={() => setActiveTab(key as WorkspaceTab)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'chat' && (
       <div className="workspace-layout">
         <aside className="task-panel">
           <div className="panel-title">任务记录</div>
@@ -425,8 +706,7 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
                     className="btn btn-ghost btn-sm"
                     onClick={e => {
                       e.stopPropagation()
-                      setConversationId(task.conversation_id)
-                      loadMessages(task.conversation_id!)
+                      openConversation(task.conversation_id!)
                     }}
                   >
                     查看对话
@@ -446,12 +726,10 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
               value={conversationId || ''}
               onChange={async e => {
                 const cid = e.target.value || null
-                setConversationId(cid)
-                if (cid) await loadMessages(cid)
-                else setMessages([])
+                await openConversation(cid)
               }}
             >
-              <option value="">新临时对话</option>
+              <option value="">{draftConversation ? '新对话（未保存）' : '新临时对话'}</option>
               {convs.map(c => (
                 <option key={c.id} value={c.id}>{c.title} · {new Date(c.updated_at || c.created_at).toLocaleDateString('zh-CN')}</option>
               ))}
@@ -459,8 +737,7 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
             <button
               className="btn btn-ghost btn-sm"
               onClick={() => {
-                setConversationId(null)
-                setMessages([])
+                startNewConversation()
               }}
             >
               新对话
@@ -536,6 +813,134 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
           </div>
         </section>
       </div>
+      )}
+
+      {activeTab === 'profile' && !readOnlyProfile && (
+        <section className="memory-panel">
+          <div className="memory-hero">
+            <div>
+              <h2>员工记忆 / 档案</h2>
+              <p>这些内容会注入到 {agent.name} 每次对话、任务和例行工作执行的 prompt 中。</p>
+            </div>
+            {profile?.updated_at && <span>上次更新：{displayTime(profile.updated_at)}</span>}
+          </div>
+          <form onSubmit={submitProfile} className="profile-grid">
+            <label>
+              <span>职责定位</span>
+              <textarea className="form-textarea" value={profileForm.mission} onChange={e => setProfileForm({ ...profileForm, mission: e.target.value })} placeholder="这个员工在公司里的核心使命和边界" />
+            </label>
+            <label>
+              <span>职责清单</span>
+              <textarea className="form-textarea" value={profileForm.responsibilities} onChange={e => setProfileForm({ ...profileForm, responsibilities: e.target.value })} placeholder="负责哪些业务、指标、协作对象" />
+            </label>
+            <label>
+              <span>每日任务</span>
+              <textarea className="form-textarea" value={profileForm.daily_tasks} onChange={e => setProfileForm({ ...profileForm, daily_tasks: e.target.value })} placeholder="每天固定要检查、汇报、推进的事项" />
+            </label>
+            <label>
+              <span>工作 SOP</span>
+              <textarea className="form-textarea" value={profileForm.sop} onChange={e => setProfileForm({ ...profileForm, sop: e.target.value })} placeholder="标准流程、交付格式、常用判断规则" />
+            </label>
+            <label>
+              <span>账号信息</span>
+              <textarea className="form-textarea" value={profileForm.account_notes} onChange={e => setProfileForm({ ...profileForm, account_notes: e.target.value })} placeholder="飞书、企微、在线表格、店铺后台等账号说明，不建议直接写明文密码" />
+            </label>
+            <label>
+              <span>沟通规则</span>
+              <textarea className="form-textarea" value={profileForm.communication_rules} onChange={e => setProfileForm({ ...profileForm, communication_rules: e.target.value })} placeholder="什么时候找谁、用什么格式同步、如何跟其他员工对接" />
+            </label>
+            <label>
+              <span>审批规则</span>
+              <textarea className="form-textarea" value={profileForm.approval_rules} onChange={e => setProfileForm({ ...profileForm, approval_rules: e.target.value })} placeholder="哪些事情需要老板确认，哪些可以自主执行" />
+            </label>
+            <label>
+              <span>工作风格</span>
+              <textarea className="form-textarea" value={profileForm.work_style} onChange={e => setProfileForm({ ...profileForm, work_style: e.target.value })} placeholder="回复风格、报告颗粒度、优先级偏好" />
+            </label>
+            <div className="profile-actions">
+              <button type="submit" className="btn btn-primary">保存员工记忆</button>
+            </div>
+          </form>
+        </section>
+      )}
+
+      {activeTab === 'routines' && (
+        <section className="memory-panel">
+          <div className="memory-hero">
+            <div>
+              <h2>例行工作</h2>
+              <p>适合日报、巡检、报表、店铺检查等固定节奏工作，到点会自动生成任务记录。</p>
+            </div>
+            <button className="btn btn-primary" onClick={() => openRoutineModal()}>新增例行工作</button>
+          </div>
+          <div className="routine-grid">
+            {routines.map(routine => (
+              <div key={routine.id} className={`routine-card ${routine.enabled ? '' : 'disabled'}`}>
+                <div className="routine-card-head">
+                  <div>
+                    <h3>{routine.title}</h3>
+                    <p>{ROUTINE_LABEL[routine.schedule_type]} {routine.schedule_type === 'cron' ? routine.cron_expression : routine.schedule_time}</p>
+                  </div>
+                  <span className={routine.enabled ? 'enabled-dot' : 'disabled-dot'}>{routine.enabled ? '启用' : '停用'}</span>
+                </div>
+                <div className="routine-desc">{routine.description || '暂无说明'}</div>
+                <div className="routine-meta">
+                  <span>下次：{displayTime(routine.next_run_at)}</span>
+                  <span>上次：{displayTime(routine.last_run_at)}</span>
+                </div>
+                <div className="task-actions">
+                  <button className="btn btn-secondary btn-sm" onClick={() => openRoutineModal(routine)}>编辑</button>
+                  <button className="btn btn-ghost btn-sm danger-text" onClick={() => handleDeleteRoutine(routine)}>删除</button>
+                </div>
+              </div>
+            ))}
+            {routines.length === 0 && <div className="empty-mini">还没有例行工作，可以先加日报、店铺巡检、竞品监控。</div>}
+          </div>
+        </section>
+      )}
+
+      {activeTab === 'integrations' && (
+        <section className="memory-panel">
+          <div className="memory-hero">
+            <div>
+              <h2>账号与工具</h2>
+              <p>先登记飞书、企业微信、QQ、微信、浏览器账号和在线文档信息，员工执行任务时会知道该用哪个账号。</p>
+            </div>
+            <button className="btn btn-primary" onClick={() => openIntegrationModal()}>添加账号工具</button>
+          </div>
+          <div className="integration-guide">
+            <div>
+              <strong>推荐接入方式</strong>
+              <p>优先使用开放平台 API 或群机器人，把 app_id、机器人 webhook、文档空间、表格链接等写在配置里；密钥只写环境变量名，例如 FEISHU_APP_SECRET。</p>
+            </div>
+            <div>
+              <strong>个人账号类工具</strong>
+              <p>QQ、微信这类个人账号通常没有稳定开放 API，建议登记账号用途和浏览器登录要求，让员工通过浏览器自动化执行；首次使用需要你在本机浏览器里完成登录。</p>
+            </div>
+            <div>
+              <strong>交给 AI 员工的方法</strong>
+              <p>在这里添加账号工具后，再到“员工档案”的账号信息和 SOP 里写清楚什么时候用哪个账号、发给谁、发送格式和审批边界。</p>
+            </div>
+          </div>
+          <div className="integration-grid">
+            {integrations.map(integration => (
+              <div key={integration.id} className={`integration-card ${integration.enabled ? '' : 'disabled'}`}>
+                <div>
+                  <span className="integration-provider">{INTEGRATION_LABEL[integration.provider]}</span>
+                  <h3>{integration.name}</h3>
+                  <p>{integration.account_label || '未填写账号说明'}</p>
+                </div>
+                <pre>{JSON.stringify(integration.config || {}, null, 2)}</pre>
+                <div className="task-actions">
+                  <button className="btn btn-secondary btn-sm" onClick={() => openIntegrationModal(integration)}>编辑</button>
+                  <button className="btn btn-ghost btn-sm danger-text" onClick={() => handleDeleteIntegration(integration)}>删除</button>
+                </div>
+              </div>
+            ))}
+            {integrations.length === 0 && <div className="empty-mini">还没有账号工具。建议先登记飞书应用、企业微信群机器人或常用浏览器账号。</div>}
+          </div>
+        </section>
+      )}
 
       {editingTitle && (
         <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setEditingTitle(null) }}>
@@ -686,8 +1091,7 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
                       type="button"
                       className="btn btn-secondary"
                       onClick={() => {
-                        setConversationId(selectedTask.conversation_id)
-                        loadMessages(selectedTask.conversation_id!)
+                        openConversation(selectedTask.conversation_id!)
                         setSelectedTask(null)
                       }}
                     >
@@ -708,6 +1112,106 @@ export function AgentChat({ showToast }: { showToast: (msg: string, type: string
                     保存修改
                   </button>
                 </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {routineModalOpen && (
+        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setRoutineModalOpen(false) }}>
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3 className="modal-title">{selectedRoutine ? '编辑例行工作' : '新增例行工作'}</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setRoutineModalOpen(false)}>关闭</button>
+            </div>
+            <form onSubmit={submitRoutine} className="task-form">
+              <label>
+                <span>标题</span>
+                <input className="form-input" value={routineForm.title} onChange={e => setRoutineForm({ ...routineForm, title: e.target.value })} required />
+              </label>
+              <label>
+                <span>执行说明</span>
+                <textarea className="form-textarea" value={routineForm.description} onChange={e => setRoutineForm({ ...routineForm, description: e.target.value })} />
+              </label>
+              <div className="form-grid">
+                <label>
+                  <span>周期</span>
+                  <select className="form-select" value={routineForm.schedule_type} onChange={e => setRoutineForm({ ...routineForm, schedule_type: e.target.value as RoutineFormState['schedule_type'] })}>
+                    <option value="daily">每天</option>
+                    <option value="weekly">每周</option>
+                    <option value="monthly">每月</option>
+                    <option value="cron">Cron</option>
+                  </select>
+                </label>
+                <label>
+                  <span>执行时间</span>
+                  <input className="form-input" type="time" value={routineForm.schedule_time} onChange={e => setRoutineForm({ ...routineForm, schedule_time: e.target.value })} />
+                </label>
+              </div>
+              {routineForm.schedule_type === 'cron' && (
+                <label>
+                  <span>Cron 表达式</span>
+                  <input className="form-input" value={routineForm.cron_expression} onChange={e => setRoutineForm({ ...routineForm, cron_expression: e.target.value })} placeholder="先保存表达式，后续可接专用 cron 解析器" />
+                </label>
+              )}
+              <label className="toggle-row">
+                <input type="checkbox" checked={routineForm.enabled} onChange={e => setRoutineForm({ ...routineForm, enabled: e.target.checked })} />
+                启用例行工作
+              </label>
+              <label className="toggle-row">
+                <input type="checkbox" checked={routineForm.save_conversation} onChange={e => setRoutineForm({ ...routineForm, save_conversation: e.target.checked })} />
+                保存执行对话
+              </label>
+              <div className="modal-actions">
+                <button type="button" className="btn btn-secondary" onClick={() => setRoutineModalOpen(false)}>取消</button>
+                <button type="submit" className="btn btn-primary">保存</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {integrationModalOpen && (
+        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setIntegrationModalOpen(false) }}>
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3 className="modal-title">{selectedIntegration ? '编辑账号工具' : '添加账号工具'}</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setIntegrationModalOpen(false)}>关闭</button>
+            </div>
+            <form onSubmit={submitIntegration} className="task-form">
+              <div className="form-grid">
+                <label>
+                  <span>类型</span>
+                  <select className="form-select" value={integrationForm.provider} onChange={e => setIntegrationForm({ ...integrationForm, provider: e.target.value as IntegrationFormState['provider'] })}>
+                    <option value="feishu">飞书</option>
+                    <option value="wecom">企业微信</option>
+                    <option value="qq">QQ</option>
+                    <option value="wechat">微信</option>
+                    <option value="browser">浏览器</option>
+                    <option value="other">其他</option>
+                  </select>
+                </label>
+                <label>
+                  <span>名称</span>
+                  <input className="form-input" value={integrationForm.name} onChange={e => setIntegrationForm({ ...integrationForm, name: e.target.value })} placeholder="例如：运营部飞书应用" required />
+                </label>
+              </div>
+              <label>
+                <span>账号说明</span>
+                <input className="form-input" value={integrationForm.account_label} onChange={e => setIntegrationForm({ ...integrationForm, account_label: e.target.value })} placeholder="例如：店铺运营机器人、某某文档空间" />
+              </label>
+              <label>
+                <span>配置 JSON</span>
+                <textarea className="form-textarea code-textarea" value={integrationForm.configText} onChange={e => setIntegrationForm({ ...integrationForm, configText: e.target.value })} />
+              </label>
+              <label className="toggle-row">
+                <input type="checkbox" checked={integrationForm.enabled} onChange={e => setIntegrationForm({ ...integrationForm, enabled: e.target.checked })} />
+                启用账号工具
+              </label>
+              <div className="modal-actions">
+                <button type="button" className="btn btn-secondary" onClick={() => setIntegrationModalOpen(false)}>取消</button>
+                <button type="submit" className="btn btn-primary">保存</button>
               </div>
             </form>
           </div>

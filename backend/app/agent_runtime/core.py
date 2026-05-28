@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI
 
-from ..config import get_provider
+from ..config import get_provider_config
 from .tools.base import BaseTool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -20,6 +20,7 @@ class AgentConfig:
     model_name: str = "deepseek-chat"
     tools: list[BaseTool] = field(default_factory=list)
     agent_id: str = ""
+    api_key: str = ""
 
 
 @dataclass
@@ -34,13 +35,15 @@ class AgentRuntime:
 
     def __init__(self, config: AgentConfig):
         self.config = config
-        provider = get_provider(config.provider)
+        provider = get_provider_config(config.provider)
         if not provider:
             raise ValueError(f"Unknown LLM provider: {config.provider}")
+        if config.api_key:
+            provider["api_key"] = config.api_key
         if not provider.get("api_key"):
             raise ValueError(
                 f"Missing API key for provider: {config.provider}. "
-                f"Set {provider.get('api_key_env') or config.provider.upper() + '_API_KEY'} in backend/.env."
+                "Please configure it in Model Management."
             )
         self.client = AsyncOpenAI(
             api_key=provider["api_key"],

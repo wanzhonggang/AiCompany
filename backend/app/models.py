@@ -26,10 +26,75 @@ class TaskStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class Enterprise(Base):
+    __tablename__ = "enterprises"
+
+    id = Column(String(12), primary_key=True, default=gen_id)
+    name = Column(String(120), nullable=False)
+    plan = Column(String(20), default="trial")
+    billing_period = Column(String(20), default="monthly")
+    payment_status = Column(String(20), default="trial")
+    default_provider = Column(String(50), default="")
+    default_model = Column(String(150), default="")
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    users = relationship("UserAccount", back_populates="enterprise", cascade="all, delete-orphan")
+
+
+class UserAccount(Base):
+    __tablename__ = "user_accounts"
+
+    id = Column(String(12), primary_key=True, default=gen_id)
+    enterprise_id = Column(String(12), ForeignKey("enterprises.id"), nullable=False)
+    username = Column(String(80), unique=True, nullable=False)
+    password_hash = Column(String(300), nullable=False)
+    role = Column(String(20), default="admin")
+    agent_id = Column(String(12), ForeignKey("agents.id"), nullable=True)
+    display_name = Column(String(100), default="")
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    enterprise = relationship("Enterprise", back_populates="users")
+    agent = relationship("Agent")
+
+
+class EnterpriseLLMKey(Base):
+    __tablename__ = "enterprise_llm_keys"
+
+    id = Column(String(12), primary_key=True, default=gen_id)
+    enterprise_id = Column(String(12), ForeignKey("enterprises.id"), nullable=False)
+    provider = Column(String(50), nullable=False)
+    api_key = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class OperationLog(Base):
+    __tablename__ = "operation_logs"
+
+    id = Column(String(12), primary_key=True, default=gen_id)
+    enterprise_id = Column(String(12), ForeignKey("enterprises.id"), nullable=False)
+    actor_user_id = Column(String(12), ForeignKey("user_accounts.id"), nullable=True)
+    actor_username = Column(String(80), default="")
+    actor_role = Column(String(20), default="")
+    actor_agent_id = Column(String(12), nullable=True)
+    actor_agent_name = Column(String(100), default="")
+    action = Column(String(50), nullable=False)
+    target_type = Column(String(50), nullable=False)
+    target_id = Column(String(12), nullable=True)
+    target_name = Column(String(200), default="")
+    detail = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Agent(Base):
     __tablename__ = "agents"
 
     id = Column(String(12), primary_key=True, default=gen_id)
+    enterprise_id = Column(String(12), ForeignKey("enterprises.id"), nullable=True)
     name = Column(String(100), nullable=False)
     role = Column(String(100), nullable=False)
     department = Column(String(100), default="")
@@ -47,13 +112,17 @@ class Agent(Base):
     tasks = relationship("Task", back_populates="agent", cascade="all, delete-orphan")
     conversations = relationship("Conversation", back_populates="agent", cascade="all, delete-orphan")
     tool_bindings = relationship("AgentToolBinding", back_populates="agent", cascade="all, delete-orphan")
+    profile = relationship("AgentProfile", back_populates="agent", cascade="all, delete-orphan", uselist=False)
+    routines = relationship("AgentRoutine", back_populates="agent", cascade="all, delete-orphan")
+    integrations = relationship("AgentIntegration", back_populates="agent", cascade="all, delete-orphan")
 
 
 class Department(Base):
     __tablename__ = "departments"
 
     id = Column(String(12), primary_key=True, default=gen_id)
-    name = Column(String(100), unique=True, nullable=False)
+    enterprise_id = Column(String(12), ForeignKey("enterprises.id"), nullable=True)
+    name = Column(String(100), nullable=False)
     description = Column(Text, default="")
     color = Column(String(7), default="#06b6d4")
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -80,6 +149,60 @@ class AgentToolBinding(Base):
     enabled = Column(Boolean, default=True)
 
     agent = relationship("Agent", back_populates="tool_bindings")
+
+
+class AgentProfile(Base):
+    __tablename__ = "agent_profiles"
+
+    agent_id = Column(String(12), ForeignKey("agents.id"), primary_key=True)
+    mission = Column(Text, default="")
+    responsibilities = Column(Text, default="")
+    daily_tasks = Column(Text, default="")
+    sop = Column(Text, default="")
+    account_notes = Column(Text, default="")
+    communication_rules = Column(Text, default="")
+    approval_rules = Column(Text, default="")
+    work_style = Column(Text, default="")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    agent = relationship("Agent", back_populates="profile")
+
+
+class AgentRoutine(Base):
+    __tablename__ = "agent_routines"
+
+    id = Column(String(12), primary_key=True, default=gen_id)
+    agent_id = Column(String(12), ForeignKey("agents.id"), nullable=False)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, default="")
+    schedule_type = Column(String(20), default="daily")
+    schedule_time = Column(String(5), default="09:00")
+    cron_expression = Column(String(100), nullable=True)
+    enabled = Column(Boolean, default=True)
+    save_conversation = Column(Boolean, default=True)
+    last_run_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    agent = relationship("Agent", back_populates="routines")
+
+
+class AgentIntegration(Base):
+    __tablename__ = "agent_integrations"
+
+    id = Column(String(12), primary_key=True, default=gen_id)
+    agent_id = Column(String(12), ForeignKey("agents.id"), nullable=False)
+    provider = Column(String(30), nullable=False)
+    name = Column(String(100), nullable=False)
+    account_label = Column(String(200), default="")
+    config = Column(JSON, default=dict)
+    enabled = Column(Boolean, default=True)
+    last_test_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    agent = relationship("Agent", back_populates="integrations")
 
 
 class Task(Base):

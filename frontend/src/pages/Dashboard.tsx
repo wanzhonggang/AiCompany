@@ -10,7 +10,7 @@ const STATUS_ICONS: Record<string, { icon: string; cls: string }> = {
   completed: { icon: '✅', cls: 'rgba(59,130,246,0.2)' },
 }
 
-export function Dashboard({ showToast }: { showToast: (msg: string, type: string) => void }) {
+export function Dashboard({ showToast, enterpriseName }: { showToast: (msg: string, type: string) => void; enterpriseName: string }) {
   const [stats, setStats] = useState<Stats | null>(null)
   const [agents, setAgents] = useState<Agent[]>([])
   const [llmConfig, setLLMConfig] = useState<LLMConfig | null>(null)
@@ -48,7 +48,11 @@ export function Dashboard({ showToast }: { showToast: (msg: string, type: string
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">控制台</h1>
+        <div className="dashboard-enterprise-header">
+          <div className="dashboard-enterprise-label">当前企业</div>
+          <h1>{enterpriseName || '企业控制台'}</h1>
+          <div className="office-subtitle">控制台</div>
+        </div>
       </div>
 
       <div className="stats-grid">

@@ -64,7 +64,7 @@
           "description": "DeepSeek 推理兼容别名"
         }
       ],
-      "last_refreshed_at": "2026-05-27T06:27:28.063485"
+      "last_refreshed_at": "2026-05-27T08:27:05.361478"
     },
     {
       "name": "dashscope",
@@ -185,7 +185,7 @@
           "description": "快速响应模型"
         }
       ],
-      "last_refreshed_at": "2026-05-27T06:27:33.711167"
+      "last_refreshed_at": "2026-05-27T08:27:09.774253"
     },
     {
       "name": "siliconflow",
@@ -265,5 +265,5 @@
   ],
   "default_provider": "deepseek",
   "default_model": "deepseek-v4-pro",
-  "last_model_refresh_at": "2026-05-27T06:27:33.712545"
+  "last_model_refresh_at": "2026-05-27T08:27:09.776179"
 }

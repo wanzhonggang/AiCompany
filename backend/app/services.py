@@ -5,9 +5,35 @@ from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from .config import get_default_model, get_provider, load_llm_config
-from .models import Agent, Department, Task, Conversation, Message, AgentToolBinding, TaskStatus
-from .schemas import AgentCreate, AgentUpdate, DepartmentCreate, DepartmentUpdate, TaskCreate, TaskUpdate
+from .config import get_provider_config, load_llm_config
+from .models import (
+    Agent,
+    Department,
+    Task,
+    Conversation,
+    Message,
+    AgentToolBinding,
+    AgentProfile,
+    AgentRoutine,
+    AgentIntegration,
+    UserAccount,
+    EnterpriseLLMKey,
+    OperationLog,
+    TaskStatus,
+)
+from .schemas import (
+    AgentCreate,
+    AgentUpdate,
+    DepartmentCreate,
+    DepartmentUpdate,
+    TaskCreate,
+    TaskUpdate,
+    AgentProfileUpdate,
+    AgentRoutineCreate,
+    AgentRoutineUpdate,
+    AgentIntegrationCreate,
+    AgentIntegrationUpdate,
+)
 from .agent_runtime.core import AgentRuntime, AgentConfig, AgentEvent
 from .agent_runtime.tools.file_tools import ReadFileTool, WriteFileTool, ListDirectoryTool
 from .agent_runtime.tools.web_tools import WebSearchTool, WebFetchTool
@@ -50,13 +76,27 @@ def get_tools_for_agent(agent: Agent) -> list:
     return [t for name, t in TOOL_MAP.items() if name in enabled_names]
 
 
-def _validate_agent_model(provider_name: str, model_name: str) -> None:
-    provider = get_provider(provider_name)
+async def get_enterprise_llm_key(db: AsyncSession, enterprise_id: str | None, provider_name: str) -> str:
+    if not enterprise_id:
+        return ""
+    result = await db.execute(
+        select(EnterpriseLLMKey)
+        .where(EnterpriseLLMKey.enterprise_id == enterprise_id)
+        .where(EnterpriseLLMKey.provider == provider_name)
+    )
+    key = result.scalar_one_or_none()
+    return key.api_key if key else ""
+
+
+async def _validate_agent_model(db: AsyncSession, enterprise_id: str | None, provider_name: str, model_name: str) -> None:
+    provider = get_provider_config(provider_name)
     if not provider:
         raise ValueError("LLM 供应商不存在")
     if provider.get("status") != "ready":
         raise ValueError("该 LLM 供应商暂未接入运行时")
-    if not provider.get("api_key"):
+    if not provider_name or not model_name:
+        raise ValueError("未选择模型，不可新增AI员工")
+    if not await get_enterprise_llm_key(db, enterprise_id, provider_name):
         raise ValueError("该 LLM 供应商尚未配置 API Key")
 
     config = load_llm_config()
@@ -67,8 +107,8 @@ def _validate_agent_model(provider_name: str, model_name: str) -> None:
 
 
 async def build_org_context(db: AsyncSession, current_agent: Agent) -> str:
-    departments = await get_departments(db)
-    agents = await get_agents(db)
+    departments = await get_departments(db, enterprise_id=current_agent.enterprise_id)
+    agents = await get_agents(db, enterprise_id=current_agent.enterprise_id)
     lines = ["公司组织结构："]
     for dept in departments:
         members = [a for a in agents if (a.department or "未分配") == dept.name]
@@ -78,40 +118,305 @@ async def build_org_context(db: AsyncSession, current_agent: Agent) -> str:
         f"你当前的身份是 {current_agent.name}，部门是 {current_agent.department or '未分配'}，职位是 {current_agent.role}。"
         "当任务需要其他员工或其他部门配合时，请明确指出需要对接的员工/部门、需要交付的信息和下一步动作。"
     )
+    memory_context = await build_agent_memory_context(db, current_agent)
+    if memory_context:
+        lines.append(memory_context)
     return "\n".join(lines)
 
 
+async def get_agent_profile(db: AsyncSession, agent_id: str) -> Optional[AgentProfile]:
+    agent = await db.get(Agent, agent_id)
+    if not agent:
+        return None
+    profile = await db.get(AgentProfile, agent_id)
+    if profile:
+        return profile
+    profile = AgentProfile(agent_id=agent_id)
+    db.add(profile)
+    await db.commit()
+    await db.refresh(profile)
+    return profile
+
+
+async def log_operation(
+    db: AsyncSession,
+    actor: UserAccount | None,
+    action: str,
+    target_type: str,
+    target_id: str | None = None,
+    target_name: str = "",
+    detail: str = "",
+) -> None:
+    if not actor:
+        return
+    actor_agent_name = ""
+    if actor.agent_id:
+        agent = await db.get(Agent, actor.agent_id)
+        actor_agent_name = agent.name if agent else ""
+    db.add(OperationLog(
+        enterprise_id=actor.enterprise_id,
+        actor_user_id=actor.id,
+        actor_username=actor.username,
+        actor_role=actor.role,
+        actor_agent_id=actor.agent_id,
+        actor_agent_name=actor_agent_name,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        target_name=target_name,
+        detail=detail,
+    ))
+
+
+async def update_agent_profile(db: AsyncSession, agent_id: str, data: AgentProfileUpdate) -> Optional[AgentProfile]:
+    profile = await get_agent_profile(db, agent_id)
+    if not profile:
+        return None
+    for key, value in data.model_dump().items():
+        setattr(profile, key, value)
+    profile.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(profile)
+    return profile
+
+
+def _parse_schedule_time(value: str) -> tuple[int, int]:
+    try:
+        hour_text, minute_text = (value or "09:00").split(":", 1)
+        hour = max(0, min(23, int(hour_text)))
+        minute = max(0, min(59, int(minute_text)))
+        return hour, minute
+    except Exception:
+        return 9, 0
+
+
+def _next_routine_time(schedule_type: str, schedule_time: str, from_time: Optional[datetime] = None) -> datetime | None:
+    if schedule_type == "cron":
+        return None
+
+    base = from_time or datetime.utcnow()
+    hour, minute = _parse_schedule_time(schedule_time)
+    candidate = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= base:
+        if schedule_type == "weekly":
+            candidate += timedelta(days=7)
+        elif schedule_type == "monthly":
+            month = candidate.month + 1
+            year = candidate.year
+            if month > 12:
+                month = 1
+                year += 1
+            day = min(candidate.day, 28)
+            candidate = candidate.replace(year=year, month=month, day=day)
+        else:
+            candidate += timedelta(days=1)
+    return candidate
+
+
+async def get_agent_routines(db: AsyncSession, agent_id: str) -> list[AgentRoutine]:
+    result = await db.execute(
+        select(AgentRoutine).where(AgentRoutine.agent_id == agent_id).order_by(AgentRoutine.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def create_agent_routine(db: AsyncSession, agent_id: str, data: AgentRoutineCreate) -> Optional[AgentRoutine]:
+    if not await db.get(Agent, agent_id):
+        return None
+    routine = AgentRoutine(
+        agent_id=agent_id,
+        title=data.title,
+        description=data.description,
+        schedule_type=data.schedule_type,
+        schedule_time=data.schedule_time,
+        cron_expression=data.cron_expression,
+        enabled=data.enabled,
+        save_conversation=data.save_conversation,
+        next_run_at=data.next_run_at or _next_routine_time(data.schedule_type, data.schedule_time),
+    )
+    db.add(routine)
+    await db.commit()
+    await db.refresh(routine)
+    return routine
+
+
+async def update_agent_routine(db: AsyncSession, routine_id: str, data: AgentRoutineUpdate) -> Optional[AgentRoutine]:
+    routine = await db.get(AgentRoutine, routine_id)
+    if not routine:
+        return None
+    update_data = data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(routine, key, value)
+    if "next_run_at" not in update_data and any(k in update_data for k in ("schedule_type", "schedule_time", "enabled")):
+        routine.next_run_at = _next_routine_time(routine.schedule_type, routine.schedule_time) if routine.enabled else None
+    routine.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(routine)
+    return routine
+
+
+async def delete_agent_routine(db: AsyncSession, routine_id: str) -> bool:
+    routine = await db.get(AgentRoutine, routine_id)
+    if not routine:
+        return False
+    await db.delete(routine)
+    await db.commit()
+    return True
+
+
+async def get_agent_integrations(db: AsyncSession, agent_id: str) -> list[AgentIntegration]:
+    result = await db.execute(
+        select(AgentIntegration).where(AgentIntegration.agent_id == agent_id).order_by(AgentIntegration.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def create_agent_integration(db: AsyncSession, agent_id: str, data: AgentIntegrationCreate) -> Optional[AgentIntegration]:
+    if not await db.get(Agent, agent_id):
+        return None
+    integration = AgentIntegration(
+        agent_id=agent_id,
+        provider=data.provider,
+        name=data.name,
+        account_label=data.account_label,
+        config=data.config,
+        enabled=data.enabled,
+    )
+    db.add(integration)
+    await db.commit()
+    await db.refresh(integration)
+    return integration
+
+
+async def update_agent_integration(db: AsyncSession, integration_id: str, data: AgentIntegrationUpdate) -> Optional[AgentIntegration]:
+    integration = await db.get(AgentIntegration, integration_id)
+    if not integration:
+        return None
+    for key, value in data.model_dump(exclude_unset=True).items():
+        setattr(integration, key, value)
+    integration.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(integration)
+    return integration
+
+
+async def delete_agent_integration(db: AsyncSession, integration_id: str) -> bool:
+    integration = await db.get(AgentIntegration, integration_id)
+    if not integration:
+        return False
+    await db.delete(integration)
+    await db.commit()
+    return True
+
+
+async def build_agent_memory_context(db: AsyncSession, current_agent: Agent) -> str:
+    profile = await db.get(AgentProfile, current_agent.id)
+    routines = await get_agent_routines(db, current_agent.id)
+    integrations = await get_agent_integrations(db, current_agent.id)
+
+    lines: list[str] = []
+    if profile:
+        sections = [
+            ("职责定位", profile.mission),
+            ("职责清单", profile.responsibilities),
+            ("每日工作", profile.daily_tasks),
+            ("工作 SOP", profile.sop),
+            ("账号信息", profile.account_notes),
+            ("沟通规则", profile.communication_rules),
+            ("审批规则", profile.approval_rules),
+            ("工作风格", profile.work_style),
+        ]
+        for title, content in sections:
+            if content and content.strip():
+                lines.append(f"{title}：\n{content.strip()}")
+
+    enabled_routines = [r for r in routines if r.enabled]
+    if enabled_routines:
+        lines.append("例行工作：")
+        for routine in enabled_routines[:20]:
+            schedule = routine.cron_expression if routine.schedule_type == "cron" else f"{routine.schedule_type} {routine.schedule_time}"
+            desc = f"：{routine.description.strip()}" if routine.description and routine.description.strip() else ""
+            lines.append(f"- {routine.title}（{schedule}）{desc}")
+
+    enabled_integrations = [i for i in integrations if i.enabled]
+    if enabled_integrations:
+        lines.append("可用账号与工具：")
+        for integration in enabled_integrations[:20]:
+            config = integration.config or {}
+            config_hint = ", ".join(f"{k}={v}" for k, v in config.items() if v and "key" not in k.lower() and "secret" not in k.lower())
+            suffix = f"，配置：{config_hint}" if config_hint else ""
+            account = f"，账号：{integration.account_label}" if integration.account_label else ""
+            lines.append(f"- {integration.name}（{integration.provider}{account}{suffix}）")
+
+    if not lines:
+        return ""
+    return "员工长期记忆/档案：\n" + "\n".join(lines)
+
+
 # ---- Agent CRUD ----
-async def ensure_department(db: AsyncSession, name: str, description: str = "", color: str = "#06b6d4") -> Department:
+async def ensure_department(
+    db: AsyncSession,
+    name: str,
+    description: str = "",
+    color: str = "#06b6d4",
+    enterprise_id: Optional[str] = None,
+) -> Department:
     clean_name = (name or "未分配").strip() or "未分配"
-    result = await db.execute(select(Department).where(Department.name == clean_name))
+    query = select(Department).where(Department.name == clean_name)
+    if enterprise_id:
+        query = query.where(Department.enterprise_id == enterprise_id)
+    result = await db.execute(query)
     department = result.scalar_one_or_none()
     if department:
         return department
-    department = Department(name=clean_name, description=description, color=color)
+    if enterprise_id:
+        fallback = await db.execute(select(Department).where(Department.name == clean_name))
+        department = fallback.scalar_one_or_none()
+        if department:
+            if not department.enterprise_id:
+                department.enterprise_id = enterprise_id
+            return department
+    department = Department(name=clean_name, description=description, color=color, enterprise_id=enterprise_id)
     db.add(department)
     await db.flush()
     return department
 
 
-async def get_departments(db: AsyncSession) -> list[Department]:
-    result = await db.execute(select(Department).order_by(Department.created_at.asc()))
+async def get_departments(db: AsyncSession, enterprise_id: Optional[str] = None) -> list[Department]:
+    query = select(Department).order_by(Department.created_at.asc())
+    if enterprise_id:
+        query = query.where(Department.enterprise_id == enterprise_id)
+    result = await db.execute(query)
     return list(result.scalars().all())
 
 
-async def get_department_member_counts(db: AsyncSession) -> dict[str, int]:
-    rows = (await db.execute(select(Agent.department, func.count(Agent.id)).group_by(Agent.department))).all()
+async def get_department(db: AsyncSession, department_id: str, enterprise_id: Optional[str] = None) -> Optional[Department]:
+    department = await db.get(Department, department_id)
+    if not department or (enterprise_id and department.enterprise_id != enterprise_id):
+        return None
+    return department
+
+
+async def get_department_member_counts(db: AsyncSession, enterprise_id: Optional[str] = None) -> dict[str, int]:
+    query = select(Agent.department, func.count(Agent.id)).group_by(Agent.department)
+    if enterprise_id:
+        query = query.where(Agent.enterprise_id == enterprise_id)
+    rows = (await db.execute(query)).all()
     return {row[0] or "未分配": row[1] for row in rows}
 
 
-async def create_department(db: AsyncSession, data: DepartmentCreate) -> Department:
-    existing = await db.execute(select(Department).where(Department.name == data.name.strip()))
+async def create_department(db: AsyncSession, data: DepartmentCreate, enterprise_id: Optional[str] = None) -> Department:
+    query = select(Department).where(Department.name == data.name.strip())
+    if enterprise_id:
+        query = query.where(Department.enterprise_id == enterprise_id)
+    existing = await db.execute(query)
     if existing.scalar_one_or_none():
         raise ValueError("部门名称已存在")
     department = Department(
         name=data.name.strip(),
         description=data.description,
         color=data.color,
+        enterprise_id=enterprise_id,
     )
     db.add(department)
     await db.commit()
@@ -119,9 +424,14 @@ async def create_department(db: AsyncSession, data: DepartmentCreate) -> Departm
     return department
 
 
-async def update_department(db: AsyncSession, department_id: str, data: DepartmentUpdate) -> Optional[Department]:
+async def update_department(
+    db: AsyncSession,
+    department_id: str,
+    data: DepartmentUpdate,
+    enterprise_id: Optional[str] = None,
+) -> Optional[Department]:
     department = await db.get(Department, department_id)
-    if not department:
+    if not department or (enterprise_id and department.enterprise_id != enterprise_id):
         return None
 
     update_data = data.model_dump(exclude_unset=True)
@@ -130,7 +440,10 @@ async def update_department(db: AsyncSession, department_id: str, data: Departme
         new_name = update_data["name"].strip()
         if not new_name:
             raise ValueError("部门名称不能为空")
-        existing = await db.execute(select(Department).where(Department.name == new_name, Department.id != department_id))
+        existing_query = select(Department).where(Department.name == new_name, Department.id != department_id)
+        if enterprise_id:
+            existing_query = existing_query.where(Department.enterprise_id == enterprise_id)
+        existing = await db.execute(existing_query)
         if existing.scalar_one_or_none():
             raise ValueError("部门名称已存在")
         update_data["name"] = new_name
@@ -140,18 +453,24 @@ async def update_department(db: AsyncSession, department_id: str, data: Departme
     department.updated_at = datetime.utcnow()
 
     if "name" in update_data and update_data["name"] != old_name:
-        await db.execute(update(Agent).where(Agent.department == old_name).values(department=update_data["name"]))
+        rename_query = update(Agent).where(Agent.department == old_name)
+        if enterprise_id:
+            rename_query = rename_query.where(Agent.enterprise_id == enterprise_id)
+        await db.execute(rename_query.values(department=update_data["name"]))
 
     await db.commit()
     await db.refresh(department)
     return department
 
 
-async def delete_department(db: AsyncSession, department_id: str) -> bool:
+async def delete_department(db: AsyncSession, department_id: str, enterprise_id: Optional[str] = None) -> bool:
     department = await db.get(Department, department_id)
-    if not department:
+    if not department or (enterprise_id and department.enterprise_id != enterprise_id):
         return False
-    member_count = (await db.execute(select(func.count(Agent.id)).where(Agent.department == department.name))).scalar() or 0
+    member_count_query = select(func.count(Agent.id)).where(Agent.department == department.name)
+    if enterprise_id:
+        member_count_query = member_count_query.where(Agent.enterprise_id == enterprise_id)
+    member_count = (await db.execute(member_count_query)).scalar() or 0
     if member_count > 0:
         raise ValueError("部门下还有员工，不能删除")
     await db.delete(department)
@@ -159,11 +478,14 @@ async def delete_department(db: AsyncSession, department_id: str) -> bool:
     return True
 
 
-async def create_agent(db: AsyncSession, data: AgentCreate) -> Agent:
-    model_name = data.model_name or get_default_model()
-    _validate_agent_model(data.provider, model_name)
-    await ensure_department(db, data.department)
+async def create_agent(db: AsyncSession, data: AgentCreate, enterprise_id: Optional[str] = None) -> Agent:
+    model_name = (data.model_name or "").strip()
+    if not data.provider or not model_name:
+        raise ValueError("未选择模型，不可新增AI员工")
+    await _validate_agent_model(db, enterprise_id, data.provider, model_name)
+    await ensure_department(db, data.department, enterprise_id=enterprise_id)
     agent = Agent(
+        enterprise_id=enterprise_id,
         name=data.name,
         role=data.role,
         department=data.department,
@@ -183,31 +505,37 @@ async def create_agent(db: AsyncSession, data: AgentCreate) -> Agent:
     return agent
 
 
-async def get_agents(db: AsyncSession) -> list[Agent]:
+async def get_agents(db: AsyncSession, enterprise_id: Optional[str] = None) -> list[Agent]:
+    query = select(Agent).options(selectinload(Agent.tool_bindings)).order_by(Agent.created_at.desc())
+    if enterprise_id:
+        query = query.where(Agent.enterprise_id == enterprise_id)
     result = await db.execute(
-        select(Agent).options(selectinload(Agent.tool_bindings)).order_by(Agent.created_at.desc())
+        query
     )
     return list(result.scalars().all())
 
 
-async def get_agent(db: AsyncSession, agent_id: str) -> Optional[Agent]:
+async def get_agent(db: AsyncSession, agent_id: str, enterprise_id: Optional[str] = None) -> Optional[Agent]:
+    query = select(Agent).options(selectinload(Agent.tool_bindings)).where(Agent.id == agent_id)
+    if enterprise_id:
+        query = query.where(Agent.enterprise_id == enterprise_id)
     result = await db.execute(
-        select(Agent).options(selectinload(Agent.tool_bindings)).where(Agent.id == agent_id)
+        query
     )
     return result.scalar_one_or_none()
 
 
-async def update_agent(db: AsyncSession, agent_id: str, data: AgentUpdate) -> Optional[Agent]:
-    agent = await get_agent(db, agent_id)
+async def update_agent(db: AsyncSession, agent_id: str, data: AgentUpdate, enterprise_id: Optional[str] = None) -> Optional[Agent]:
+    agent = await get_agent(db, agent_id, enterprise_id=enterprise_id)
     if not agent:
         return None
     update_data = data.model_dump(exclude_unset=True)
     next_provider = update_data.get("provider", agent.provider)
     next_model = update_data.get("model_name", agent.model_name)
     if "provider" in update_data or "model_name" in update_data:
-        _validate_agent_model(next_provider, next_model)
+        await _validate_agent_model(db, enterprise_id, next_provider, next_model)
     if "department" in update_data and update_data["department"] is not None:
-        await ensure_department(db, update_data["department"])
+        await ensure_department(db, update_data["department"], enterprise_id=enterprise_id)
     for key, value in update_data.items():
         setattr(agent, key, value)
     agent.updated_at = datetime.utcnow()
@@ -216,10 +544,15 @@ async def update_agent(db: AsyncSession, agent_id: str, data: AgentUpdate) -> Op
     return agent
 
 
-async def delete_agent(db: AsyncSession, agent_id: str) -> bool:
-    agent = await get_agent(db, agent_id)
+async def delete_agent(db: AsyncSession, agent_id: str, enterprise_id: Optional[str] = None) -> bool:
+    agent = await get_agent(db, agent_id, enterprise_id=enterprise_id)
     if not agent:
         return False
+    await db.execute(
+        update(UserAccount)
+        .where(UserAccount.agent_id == agent_id)
+        .values(enabled=False, agent_id=None)
+    )
     await db.delete(agent)
     await db.commit()
     return True
@@ -347,6 +680,7 @@ async def chat_with_agent(
         model_name=agent.model_name,
         tools=tools,
         agent_id=agent.id,
+        api_key=await get_enterprise_llm_key(db, agent.enterprise_id, agent.provider),
     )
     try:
         runtime = AgentRuntime(config)
@@ -580,6 +914,7 @@ async def execute_task(task_id: str) -> None:
             model_name=agent.model_name,
             tools=tools,
             agent_id=agent.id,
+            api_key=await get_enterprise_llm_key(db, agent.enterprise_id, agent.provider),
         )
 
         full_response = ""
@@ -683,8 +1018,64 @@ async def get_assigned_immediate_tasks(db: AsyncSession) -> list[Task]:
     return list(result.scalars().all())
 
 
-async def get_agent_stats(db: AsyncSession) -> dict:
-    result = await db.execute(select(Agent.status, func.count(Agent.id)).group_by(Agent.status))
+async def get_due_routines(db: AsyncSession) -> list[AgentRoutine]:
+    now = datetime.utcnow()
+    result = await db.execute(
+        select(AgentRoutine)
+        .where(AgentRoutine.enabled == True)  # noqa: E712
+        .where(AgentRoutine.next_run_at.is_not(None))
+        .where(AgentRoutine.next_run_at <= now)
+        .order_by(AgentRoutine.next_run_at.asc())
+        .limit(10)
+    )
+    return list(result.scalars().all())
+
+
+async def materialize_routine_task(routine_id: str) -> Optional[str]:
+    from .database import async_session
+
+    async with async_session() as db:
+        routine = await db.get(AgentRoutine, routine_id)
+        if not routine or not routine.enabled:
+            return None
+        agent = await get_agent(db, routine.agent_id)
+        if not agent:
+            return None
+
+        due_at = routine.next_run_at or datetime.utcnow()
+        if due_at > datetime.utcnow():
+            return None
+
+        task = Task(
+            agent_id=routine.agent_id,
+            title=f"例行工作：{routine.title}",
+            description=routine.description or routine.title,
+            task_type="immediate",
+            schedule=f"{routine.schedule_type} {routine.schedule_time}".strip(),
+            repeat="none",
+            priority="normal",
+            save_conversation=routine.save_conversation,
+            status=TaskStatus.ASSIGNED.value,
+        )
+        if routine.save_conversation:
+            conversation = Conversation(agent_id=routine.agent_id, title=task.title[:200])
+            db.add(conversation)
+            await db.flush()
+            task.conversation_id = conversation.id
+
+        routine.last_run_at = datetime.utcnow()
+        routine.next_run_at = _next_routine_time(routine.schedule_type, routine.schedule_time, routine.last_run_at)
+        routine.updated_at = datetime.utcnow()
+        db.add(task)
+        await db.commit()
+        return task.id
+
+
+async def get_agent_stats(db: AsyncSession, enterprise_id: Optional[str] = None) -> dict:
+    query = select(Agent.status, func.count(Agent.id)).group_by(Agent.status)
+    if enterprise_id:
+        query = query.where(Agent.enterprise_id == enterprise_id)
+    result = await db.execute(query)
     counts = {row[0]: row[1] for row in result.all()}
     return {
         "total": sum(counts.values()),

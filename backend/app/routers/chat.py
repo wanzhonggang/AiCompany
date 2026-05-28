@@ -5,10 +5,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..auth import ensure_agent_access, get_current_user
 from ..database import get_db, async_session
-from ..models import Message, Task
+from ..models import Message, Task, UserAccount
 from ..schemas import ChatRequest, ConversationRenameRequest
-from ..services import build_org_context, get_agent, get_conversation, create_conversation, get_conversation_messages, get_tools_for_agent
+from ..services import build_org_context, get_agent, get_conversation, create_conversation, get_conversation_messages, get_tools_for_agent, get_enterprise_llm_key
 from ..agent_runtime.core import AgentRuntime, AgentConfig, AgentEvent
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -20,12 +21,17 @@ def _sse(event_type: str, content: str, data: dict | None = None) -> str:
 
 
 @router.post("/{agent_id}")
-async def chat_with_agent(agent_id: str, data: ChatRequest):
+async def chat_with_agent(
+    agent_id: str,
+    data: ChatRequest,
+    current_user: UserAccount = Depends(get_current_user),
+):
     """Stream chat response via SSE (Server-Sent Events)."""
+    ensure_agent_access(current_user, agent_id)
 
     async def stream():
         async with async_session() as db:
-            agent = await get_agent(db, agent_id)
+            agent = await get_agent(db, agent_id, enterprise_id=current_user.enterprise_id)
             if not agent:
                 yield _sse("error", "Agent not found")
                 return
@@ -58,6 +64,7 @@ async def chat_with_agent(agent_id: str, data: ChatRequest):
                 model_name=agent.model_name,
                 tools=tools,
                 agent_id=agent.id,
+                api_key=await get_enterprise_llm_key(db, agent.enterprise_id, agent.provider),
             )
             try:
                 runtime = AgentRuntime(config)
@@ -153,10 +160,15 @@ async def rename_conversation(
     conv_id: str,
     data: ConversationRenameRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(get_current_user),
 ):
     conv = await get_conversation(db, conv_id)
     if not conv:
         raise HTTPException(404, "Conversation not found")
+    agent = await get_agent(db, conv.agent_id, enterprise_id=current_user.enterprise_id)
+    if not agent:
+        raise HTTPException(404, "Conversation not found")
+    ensure_agent_access(current_user, conv.agent_id)
     title = data.title.strip()
     if not title:
         raise HTTPException(422, "Conversation title cannot be empty")
@@ -167,10 +179,18 @@ async def rename_conversation(
 
 
 @router.delete("/conversations/{conv_id}")
-async def delete_conversation(conv_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_conversation(
+    conv_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(get_current_user),
+):
     conv = await get_conversation(db, conv_id)
     if not conv:
         raise HTTPException(404, "Conversation not found")
+    agent = await get_agent(db, conv.agent_id, enterprise_id=current_user.enterprise_id)
+    if not agent:
+        raise HTTPException(404, "Conversation not found")
+    ensure_agent_access(current_user, conv.agent_id)
 
     await db.execute(
         update(Task)
@@ -183,7 +203,15 @@ async def delete_conversation(conv_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/conversations/{agent_id}")
-async def list_conversations(agent_id: str, db: AsyncSession = Depends(get_db)):
+async def list_conversations(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(get_current_user),
+):
+    ensure_agent_access(current_user, agent_id)
+    agent = await get_agent(db, agent_id, enterprise_id=current_user.enterprise_id)
+    if not agent:
+        raise HTTPException(404, "Agent not found")
     from sqlalchemy import select
     from ..models import Conversation
     result = await db.execute(
@@ -206,9 +234,20 @@ async def list_conversations(agent_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/messages/{conv_id}")
-async def get_messages(conv_id: str, db: AsyncSession = Depends(get_db)):
+async def get_messages(
+    conv_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(get_current_user),
+):
     """Load all messages for a conversation, in chat display format."""
     from sqlalchemy import select
+    conv = await get_conversation(db, conv_id)
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    agent = await get_agent(db, conv.agent_id, enterprise_id=current_user.enterprise_id)
+    if not agent:
+        raise HTTPException(404, "Conversation not found")
+    ensure_agent_access(current_user, conv.agent_id)
     result = await db.execute(
         select(Message).where(Message.conversation_id == conv_id).order_by(Message.created_at)
     )
