@@ -1,201 +1,171 @@
 # AI Employee Platform
 
-AI 数字员工管理平台 — 创建、管理和调度 AI 员工执行真实工作任务。
+面向企业的 AI 员工平台。系统把企业、部门、AI 员工、模型 Key、任务、会话、操作记录和员工记忆统一管理起来，老板或管理员可以像管理公司一样安排 AI 员工工作。
 
-## 架构
+## 当前能力
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  前端 (React 19 + Vite + TypeScript)                      │
-│  控制台 / AI员工管理 / SSE流式对话                         │
-└────────────────────────┬─────────────────────────────────┘
-                         │ REST + SSE
-┌────────────────────────┴─────────────────────────────────┐
-│  后端 (Python 3.14 + FastAPI)                             │
-│  Agent CRUD / 对话 / 任务 / 统计                          │
-│                                                           │
-│  Agent 运行时 (自建 ReAct 循环)                            │
-│  ┌─────────────────────────────────────────────────┐     │
-│  │ 1. 组装上下文 → 2. 调用 Claude API              │     │
-│  │ 3. 解析响应 → 有工具调用? → 执行工具 → 回到 2   │     │
-│  │ 4. 返回最终结果                                  │     │
-│  └─────────────────────────────────────────────────┘     │
-│                                                           │
-│  工具平台: 文件读写 / 目录操作 / 网页搜索 / 邮件发送       │
-└────────────────────────┬─────────────────────────────────┘
-                         │
-┌────────────────────────┴─────────────────────────────────┐
-│  存储: SQLite (async)                                     │
-└──────────────────────────────────────────────────────────┘
-```
+- 企业注册与登录：支持企业入口、员工入口、管理员账号和员工账号。
+- 多管理员：企业管理员可以创建其他管理员。
+- 权限隔离：管理员管理本企业数据；员工账号只进入自己的工作台。
+- AI 员工管理：新增员工、部门归属、模型选择、员工账号密码管理。
+- 部门管理：维护部门职责、成员归属，AI 办公室按部门展示员工。
+- 模型管理：企业独立配置 LLM API Key，未配置 Key 的模型不会给员工选择。
+- 对话生成任务：用户直接在对话框里安排工作，由模型判断普通对话、立即任务、定时任务或多任务拆分。
+- 例行工作：定时任务会显示在“例行工作”页，不需要用户单独新增例行工作。
+- 账号与工具：当任务需要企业微信、飞书、微信、QQ、浏览器或 API 时，系统自动弹框让用户补充账号、登录或 API 信息，并保存到当前员工的账号工具中。
+- 员工记忆/档案：职责、每日任务、账号说明、SOP、沟通规则、审批边界会注入每次执行 prompt。
+- 任务记录：记录每个员工的任务状态、输出、错误、执行时间和会话关联。
+- 执行进度：对话执行时展示分析、工具调用、工具结果、完成/失败状态；退出重进后会从历史工具记录恢复过程。
+- 操作记录：记录最近 30 天的员工、任务、部门、模型等关键管理操作。
+- 浏览器自动化：内置打开网页、点击、输入、截图等工具，用于网页/API 不好用时兜底。
 
-## 项目结构
+## 技术栈
 
-```
+| 层级 | 技术 |
+| --- | --- |
+| 前端 | React 19 + TypeScript + Vite |
+| 后端 | FastAPI + SQLAlchemy async |
+| 数据库 | SQLite，本地文件位于 `backend/data/ai_employees.db` |
+| LLM 调用 | OpenAI-compatible API，按企业保存 provider API Key |
+| 实时输出 | SSE 流式对话 |
+| 自动化工具 | 文件、网页搜索、浏览器、员工委派、邮件等工具 |
+
+## 目录结构
+
+```text
 ai-employee-platform/
-├── backend/
-│   ├── app/
-│   │   ├── main.py              # FastAPI 入口 + 种子数据
-│   │   ├── config.py            # 配置 (API Key, 路径等)
-│   │   ├── database.py          # SQLite async 连接
-│   │   ├── models.py            # 数据模型 (Agent, Task, Conversation, Message)
-│   │   ├── schemas.py           # Pydantic 请求/响应模型
-│   │   ├── services.py          # 业务逻辑层
-│   │   ├── routers/
-│   │   │   ├── agents.py        # Agent CRUD + 统计 API
-│   │   │   ├── chat.py          # SSE 流式对话 API
-│   │   │   ├── tools.py         # 工具列表 API
-│   │   │   └── tasks.py         # 任务管理 API
-│   │   └── agent_runtime/
-│   │       ├── core.py          # ReAct 循环引擎 (AgentRuntime)
-│   │       └── tools/
-│   │           ├── base.py      # BaseTool 抽象类
-│   │           ├── file_tools.py # 文件读写、列目录
-│   │           ├── web_tools.py  # 网页搜索、抓取
-│   │           └── email_tools.py# SMTP 邮件发送
-│   ├── .env                     # 环境变量 (API Key)
-│   └── requirements.txt
-├── frontend/
-│   ├── src/
-│   │   ├── App.tsx              # 路由 + 布局
-│   │   ├── main.tsx             # 入口
-│   │   ├── index.css            # 暗色主题全局样式
-│   │   ├── api/
-│   │   │   └── client.ts        # API 封装 (REST + SSE)
-│   │   └── pages/
-│   │       ├── Dashboard.tsx    # 控制台 (概览 + 统计)
-│   │       ├── Agents.tsx       # AI 员工管理 (CRUD + 搜索)
-│   │       └── AgentChat.tsx    # SSE 流式对话界面
-│   ├── index.html
-│   ├── package.json
-│   ├── vite.config.ts
-│   └── tsconfig.json
-├── .claude/                     # Claude Code 配置
-└── README.md
+  backend/
+    app/
+      agent_runtime/        # Agent 运行时和工具
+      routers/              # Auth、员工、任务、会话、部门、审计等 API
+      auth.py               # 登录、Token、密码哈希
+      config.py             # LLM 配置读取与保存
+      database.py           # 数据库连接和轻量迁移
+      main.py               # FastAPI 入口、模型管理、调度循环
+      models.py             # SQLAlchemy 模型
+      schemas.py            # Pydantic 请求/响应模型
+      services.py           # 核心业务逻辑
+      time_utils.py         # 北京时间工具
+    data/
+      ai_employees.db       # 本地 SQLite 数据库，已被 gitignore 忽略
+    llm_config.json         # 模型供应商和模型清单
+    requirements.txt
+  frontend/
+    public/
+    src/
+      api/client.ts
+      pages/
+      App.tsx
+      index.css
+    package.json
+  README.md
 ```
 
-## 快速开始
+## 本地启动
 
-### 前提条件
-
-- Python 3.14+
-- Node.js 20+
-- [Anthropic API Key](https://console.anthropic.com/) (Claude API)
-
-### 1. 配置 API Key
+### 1. 安装依赖
 
 ```bash
-cd backend
-cp .env .env.example   # 如有需要
-# 编辑 .env，设置 ANTHROPIC_API_KEY
-```
-
-`.env` 内容：
-```ini
-ANTHROPIC_API_KEY=sk-ant-api03-your-key-here
-SECRET_KEY=change-me-in-production
-```
-
-可选 SMTP 配置（用于邮件工具）：
-```ini
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your-email@gmail.com
-SMTP_PASSWORD=your-app-password
-SMTP_FROM=your-email@gmail.com
-```
-
-### 2. 安装依赖
-
-```bash
-# 后端
 cd backend
 pip install -r requirements.txt
 
-# 前端
 cd ../frontend
 npm install
 ```
 
-### 3. 启动服务
+### 2. 启动后端
 
-**终端 1 — 后端：**
 ```bash
 cd backend
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-**终端 2 — 前端：**
+后端首次启动会初始化 SQLite 数据库，并创建默认企业和管理员账号：
+
+```text
+账号：admin
+密码：admin123
+```
+
+### 3. 启动前端
+
 ```bash
 cd frontend
 npm run dev
 ```
 
-### 4. 打开浏览器
+默认访问：
 
-访问 **http://localhost:5173**
+```text
+http://localhost:5173
+```
 
-首次启动会自动创建 4 个示例 AI 员工（Alpha 分析师、Beta 工程师、Gamma 秘书、Delta 研究员），每个员工默认启用全部 6 个工具。
+## 基本使用流程
 
-## API 文档
+1. 企业入口登录或注册企业。
+2. 管理员进入控制台，先到“模型管理”配置本企业可用模型的 API Key。
+3. 创建部门和 AI 员工，为员工选择已配置 Key 的模型。
+4. 在 AI 员工工作台直接对话安排工作。
+5. 如果对话是普通聊天，员工直接回答。
+6. 如果对话是工作安排，系统自动创建立即任务或定时任务。
+7. 如果任务需要账号工具，系统会弹框让用户补充对应账号/API/登录说明。
+8. 定时任务会显示在“例行工作”页，到点后自动生成任务记录并执行。
 
-启动后端后访问 **http://localhost:8000/docs** 查看 Swagger UI。
+## 数据与缓存说明
 
-### 核心端点
+已忽略的本地运行数据：
+
+- `backend/data/*.db`
+- `backend/data/browser_profiles/`
+- `backend/browser_screenshots/`
+- `backend/Desktop/`
+- `backend/.env.local`
+- `frontend/node_modules/`
+- `frontend/dist/`
+- `frontend/tsconfig.tsbuildinfo`
+- `**/__pycache__/`
+
+这些文件属于本地数据、构建产物或浏览器自动化缓存，不应提交到代码仓库。
+
+## 常用 API
+
+启动后端后访问 Swagger：
+
+```text
+http://localhost:8000/docs
+```
+
+常用接口：
 
 | 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/health` | 健康检查 |
-| GET | `/api/agents/stats` | Agent 统计 (总数/状态分布) |
-| GET | `/api/agents` | 列出所有 Agent |
-| POST | `/api/agents` | 创建 Agent |
-| GET | `/api/agents/{id}` | 获取 Agent 详情 |
-| PATCH | `/api/agents/{id}` | 更新 Agent |
-| DELETE | `/api/agents/{id}` | 删除 Agent |
-| POST | `/api/chat/{agent_id}` | SSE 流式对话 |
-| GET | `/api/chat/conversations/{agent_id}` | 对话历史列表 |
-| GET | `/api/tools` | 可用工具列表 |
-| POST | `/api/tasks/{agent_id}` | 创建任务 |
-| GET | `/api/tasks/agent/{agent_id}` | 任务列表 |
+| --- | --- | --- |
+| `POST` | `/api/auth/register-enterprise` | 企业注册 |
+| `POST` | `/api/auth/login` | 企业/员工登录 |
+| `GET` | `/api/auth/me` | 当前登录用户 |
+| `GET` | `/api/agents` | 员工列表 |
+| `POST` | `/api/agents` | 创建 AI 员工 |
+| `PATCH` | `/api/agents/{agent_id}` | 更新 AI 员工 |
+| `POST` | `/api/chat/{agent_id}` | 员工 SSE 对话 |
+| `GET` | `/api/chat/conversations/{agent_id}` | 会话列表 |
+| `GET` | `/api/chat/messages/{conv_id}` | 会话消息 |
+| `POST` | `/api/tasks/{agent_id}/plan` | 自然语言任务规划 |
+| `GET` | `/api/tasks/agent/{agent_id}` | 员工任务记录 |
+| `GET` | `/api/audit/logs` | 最近 30 天操作记录 |
 
-## 内置工具
+## 开发约定
 
-| 工具 | 名称 | 需人工审批 | 说明 |
-|------|------|------------|------|
-| `read_file` | 读文件 | 否 | 读取工作区内的文件 |
-| `write_file` | 写文件 | 是 | 写入文件到工作区 |
-| `list_directory` | 列目录 | 否 | 列出目录内容 |
-| `web_search` | 搜索网页 | 否 | DuckDuckGo 搜索 |
-| `web_fetch` | 抓取网页 | 否 | 获取网页文本内容 |
-| `send_email` | 发送邮件 | 否 | 通过 SMTP 发送邮件 |
+- 不要提交本地数据库、浏览器 profile、截图、构建产物和环境变量文件。
+- 企业模型 Key 按企业隔离，新增企业默认无可用模型，需要管理员自行配置。
+- 员工账号与工具只归属当前 AI 员工，不和其他员工共享。
+- 对话是主要工作入口，任务和例行工作应尽量由对话自然生成。
+- 涉及真实账号密码时，不建议保存明文密码；优先保存环境变量名、登录入口和人工登录说明。
 
-## 技术栈
+## 验证命令
 
-| 层级 | 技术 |
-|------|------|
-| 前端框架 | React 19 + TypeScript + Vite 6 |
-| UI 样式 | 自定义暗色主题 CSS |
-| 后端框架 | Python 3.14 + FastAPI |
-| Agent 运行时 | 自建 ReAct 循环 + Anthropic SDK |
-| 数据库 | SQLite (async/aiosqlite) + SQLAlchemy 2.0 |
-| LLM | Claude Opus 4.7 / Sonnet 4.6 |
+```bash
+cd backend
+python -m compileall app
 
-## 架构决策
-
-### 为什么自建 Agent 运行时而不是用 LangChain？
-
-1. **可控性**: ~200 行的 ReAct 循环，每一步都是透明的
-2. **调试性**: 每一个 LLM 调用、工具执行都是可追踪的
-3. **可观测性**: 自定义事件流，便于前端实时展示
-4. **少抽象**: 不使用 LangChain 的 Agent Executor，直接用 Anthropic SDK
-
-### 为什么用 SSE 而不是 WebSocket？
-
-Agent 对话是单向流（请求 → 流式响应），不需要双向通信。SSE 更简单、更可靠、浏览器原生支持自动重连。
-
-### 下一步
-
-按方案路线图逐步添加：
-- Phase 2: 微信集成 (WeChatFerry) + 多 Agent 协作
-- Phase 3: 多租户 + RBAC + 计费
-- Phase 4: K8s 部署 + 插件市场
+cd ../frontend
+npm run build
+```

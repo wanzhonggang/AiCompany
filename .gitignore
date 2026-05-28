@@ -1,6 +1,9 @@
 backend/.env.local
 backend/data/*.db
 backend/data/*.db-*
+backend/data/browser_profiles/
+backend/browser_screenshots/
+backend/Desktop/
 **/__pycache__/
 *.py[cod]
 frontend/node_modules/
