@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from 'react-router-dom'
-import { changeMyPassword, clearToken, getMe, getStoredToken, type AuthResult, type AuthUser } from './api/client'
+import { beginGlobalLoading, changeMyPassword, clearToken, getMe, getStoredToken, GLOBAL_LOADING_EVENT, type AuthResult, type AuthUser } from './api/client'
 import { Dashboard } from './pages/Dashboard'
 import { Agents } from './pages/Agents'
 import { AgentChat } from './pages/AgentChat'
@@ -12,7 +12,7 @@ import { Entry } from './pages/Entry'
 import { AdminManagement } from './pages/AdminManagement'
 import { AuditLogs } from './pages/AuditLogs'
 
-function Sidebar({ onLogout, onPassword }: { onLogout: () => void; onPassword: () => void }) {
+function Sidebar({ onSettings }: { onSettings: () => void }) {
   const location = useLocation()
   const links = [
     { to: '/', label: '📊 控制台', exact: true },
@@ -41,11 +41,29 @@ function Sidebar({ onLogout, onPassword }: { onLogout: () => void; onPassword: (
           </Link>
         ))}
       </nav>
-      <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <button className="btn btn-ghost btn-sm" onClick={onPassword}>修改密码</button>
-        <button className="btn btn-ghost btn-sm" onClick={onLogout}>退出登录</button>
+      <div className="sidebar-settings">
+        <button className="sidebar-settings-button" onClick={onSettings} aria-label="打开企业设置">
+          ⚙
+        </button>
       </div>
     </aside>
+  )
+}
+
+function GlobalLoading({ message }: { message: string }) {
+  return (
+    <div className="global-loading-layer">
+      <div className="global-loading-card">
+        <div className="ai-spinner">
+          <img src="/logo.svg" alt="" />
+          <span />
+        </div>
+        <div>
+          <strong>{message}</strong>
+          <p>网络请求处理中，请稍候</p>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -53,6 +71,8 @@ export default function App() {
   const [toast, setToast] = useState<{ message: string; type: string } | null>(null)
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const [globalLoading, setGlobalLoading] = useState<{ active: boolean; message: string }>({ active: false, message: '' })
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [passwordModalOpen, setPasswordModalOpen] = useState(false)
   const [passwordForm, setPasswordForm] = useState({ old_password: '', new_password: '' })
 
@@ -63,12 +83,23 @@ export default function App() {
 
   const onAuthenticated = (result: AuthResult) => {
     setCurrentUser(result.user)
+    if (result.user.role === 'admin') {
+      window.history.replaceState(null, '', '/')
+    } else if (result.user.agent_id) {
+      window.history.replaceState(null, '', `/agents/${result.user.agent_id}/chat`)
+    }
   }
 
   const logout = () => {
     clearToken()
+    setSettingsOpen(false)
     setCurrentUser(null)
     showToast('已退出登录', 'success')
+  }
+
+  const openPasswordModal = () => {
+    setSettingsOpen(false)
+    setPasswordModalOpen(true)
   }
 
   const submitPassword = async (e: React.FormEvent) => {
@@ -77,6 +108,7 @@ export default function App() {
       showToast('新密码至少 6 位', 'error')
       return
     }
+    const stopLoading = beginGlobalLoading('正在修改管理员密码...')
     try {
       await changeMyPassword(passwordForm.old_password, passwordForm.new_password)
       setPasswordModalOpen(false)
@@ -84,6 +116,8 @@ export default function App() {
       showToast('管理员密码已修改', 'success')
     } catch (e) {
       showToast(e instanceof Error ? e.message : '修改密码失败', 'error')
+    } finally {
+      stopLoading()
     }
   }
 
@@ -102,6 +136,15 @@ export default function App() {
       .finally(() => setAuthLoading(false))
   }, [])
 
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ active: boolean; message: string }>).detail
+      setGlobalLoading({ active: detail.active, message: detail.message || 'AI 正在处理中...' })
+    }
+    window.addEventListener(GLOBAL_LOADING_EVENT, handler)
+    return () => window.removeEventListener(GLOBAL_LOADING_EVENT, handler)
+  }, [])
+
   if (authLoading) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>加载中...</div>
 
   if (!currentUser) {
@@ -113,6 +156,7 @@ export default function App() {
             <div className={`toast ${toast.type}`}>{toast.message}</div>
           </div>
         )}
+        {globalLoading.active && <GlobalLoading message={globalLoading.message} />}
       </>
     )
   }
@@ -129,8 +173,8 @@ export default function App() {
     return (
       <BrowserRouter>
         <div className="app-layout" style={{ display: 'block' }}>
-          <main className="main-content" style={{ marginLeft: 0 }}>
-            <div className="page-header">
+          <main className="main-content employee-main">
+            <div className="page-header employee-topbar">
               <div>
                 <h1 className="page-title">员工工作台</h1>
                 <div className="office-subtitle">{currentUser.display_name} · {currentUser.enterprise_name}</div>
@@ -154,6 +198,7 @@ export default function App() {
             <div className={`toast ${toast.type}`}>{toast.message}</div>
           </div>
         )}
+        {globalLoading.active && <GlobalLoading message={globalLoading.message} />}
       </BrowserRouter>
     )
   }
@@ -161,7 +206,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <div className="app-layout">
-        <Sidebar onLogout={logout} onPassword={() => setPasswordModalOpen(true)} />
+        <Sidebar onSettings={() => setSettingsOpen(true)} />
         <main className="main-content">
           <Routes>
             <Route path="/" element={<Dashboard showToast={showToast} enterpriseName={currentUser.enterprise_name} />} />
@@ -179,6 +224,32 @@ export default function App() {
       {toast && (
         <div className="toast-container">
           <div className={`toast ${toast.type}`}>{toast.message}</div>
+        </div>
+      )}
+      {globalLoading.active && <GlobalLoading message={globalLoading.message} />}
+      {settingsOpen && (
+        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setSettingsOpen(false) }}>
+          <div className="modal-content settings-modal">
+            <div className="settings-company">
+              <div className="settings-company-logo">{currentUser.enterprise_name.charAt(0)}</div>
+              <div>
+                <div className="settings-label">当前企业</div>
+                <h3>{currentUser.enterprise_name}</h3>
+                <p>{currentUser.display_name || currentUser.username} · {currentUser.username}</p>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setSettingsOpen(false)}>关闭</button>
+            </div>
+            <div className="settings-actions">
+              <button className="settings-action" onClick={openPasswordModal}>
+                <span>修改密码</span>
+                <small>更新当前管理员账号的登录密码</small>
+              </button>
+              <button className="settings-action danger" onClick={logout}>
+                <span>退出登录</span>
+                <small>退出当前企业管理后台</small>
+              </button>
+            </div>
+          </div>
         </div>
       )}
       {passwordModalOpen && (

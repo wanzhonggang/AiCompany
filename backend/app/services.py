@@ -1,6 +1,8 @@
 import json
+import re
 from datetime import datetime, timedelta
 from typing import Optional, AsyncIterator
+from openai import AsyncOpenAI
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -46,6 +48,7 @@ from .agent_runtime.tools.browser_tools import (
     BrowserSnapshotTool,
     BrowserCloseTool,
 )
+from .time_utils import now_beijing, to_beijing_naive
 
 
 # ---- Tool Registry ----
@@ -65,6 +68,301 @@ BUILTIN_TOOLS = [
 ]
 
 TOOL_MAP = {t.name: t for t in BUILTIN_TOOLS}
+RUNNING_TASK_IDS: set[str] = set()
+
+
+def describe_changed_fields(update_data: dict, labels: dict[str, str]) -> str:
+    changed = [labels.get(key, key) for key, value in update_data.items() if value is not None]
+    return "更新字段：" + "、".join(changed) if changed else "提交了更新"
+
+
+def build_execution_output(full_response: str, final_data: dict) -> str:
+    text = (full_response or "").strip()
+    if text:
+        return text
+
+    tool_calls = final_data.get("tool_calls") or []
+    if not tool_calls:
+        return "任务已完成，但模型没有返回文本结果。"
+
+    lines = [f"任务已完成，共执行 {len(tool_calls)} 个工具步骤。"]
+    for index, tool_call in enumerate(tool_calls[-8:], start=1):
+        name = tool_call.get("name") or "unknown_tool"
+        status = "成功" if tool_call.get("success") else "失败"
+        output = (tool_call.get("output") or "").strip()
+        if len(output) > 240:
+            output = output[:240] + "..."
+        lines.append(f"{index}. {name}：{status}" + (f"\n   结果：{output}" if output else ""))
+    return "\n".join(lines)
+
+
+def _json_from_text(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except Exception:
+        match = re.search(r"\{.*\}", text or "", re.S)
+        if not match:
+            raise
+        return json.loads(match.group(0))
+
+
+def _normalize_provider(value: str) -> str:
+    value = (value or "").lower()
+    if value in {"feishu", "wecom", "qq", "wechat", "browser", "other"}:
+        return value
+    if "飞书" in value or "lark" in value:
+        return "feishu"
+    if "企微" in value or "企业微信" in value or "wecom" in value:
+        return "wecom"
+    if "qq" in value:
+        return "qq"
+    if "微信" in value or "wechat" in value:
+        return "wechat"
+    if "浏览器" in value or "browser" in value:
+        return "browser"
+    return "other"
+
+
+def _default_requirement(provider: str, instruction: str) -> dict:
+    labels = {
+        "feishu": "飞书账号/应用",
+        "wecom": "企业微信账号/应用",
+        "qq": "QQ账号",
+        "wechat": "微信账号",
+        "browser": "浏览器登录状态",
+        "other": "外部账号或工具",
+    }
+    access_method = "api" if any(k in instruction.lower() for k in ["api", "appkey", "app key", "secret", "webhook"]) else "web"
+    fields = [
+        {"key": "account_label", "label": "账号身份", "placeholder": "例如：Gamma 的企业微信、运营部飞书应用", "required": True},
+        {"key": "default_targets", "label": "默认联系人/群/文档", "placeholder": "例如：运营一群、老板、客户A、日报表链接", "required": False},
+        {"key": "connection_notes", "label": "登录或接入说明", "placeholder": "例如：请先在本机浏览器扫码登录，或说明后台入口", "required": True},
+    ]
+    if access_method == "api":
+        fields.extend([
+            {"key": "api_app_id", "label": "App ID / Corp ID / Webhook", "placeholder": "在对应开放平台后台复制", "required": True},
+            {"key": "api_secret_env", "label": "密钥环境变量名", "placeholder": "例如 WECOM_GAMMA_SECRET，不要填明文密码", "required": False},
+        ])
+    else:
+        fields.append({"key": "web_url", "label": "网页入口", "placeholder": "例如企业微信后台、飞书云文档链接，可留空", "required": False})
+    return {
+        "provider": provider,
+        "name": labels.get(provider, "外部账号或工具"),
+        "account_label": "",
+        "reason": "当前任务可能需要使用外部账号或工具，请补齐后再执行。",
+        "access_method": access_method,
+        "fields": fields,
+    }
+
+
+def _infer_next_run_at(text: str) -> str | None:
+    now = now_beijing()
+    hour = 9
+    minute = 0
+    match = re.search(r"(\d{1,2})[:：](\d{2})", text)
+    if match:
+        hour = max(0, min(23, int(match.group(1))))
+        minute = max(0, min(59, int(match.group(2))))
+    else:
+        hour_match = re.search(r"(上午|下午|晚上|今晚|中午)?\s*(\d{1,2})\s*点", text)
+        if hour_match:
+            hour = max(0, min(23, int(hour_match.group(2))))
+            period = hour_match.group(1) or ""
+            if period in {"下午", "晚上", "今晚"} and hour < 12:
+                hour += 12
+            if period == "中午" and hour < 11:
+                hour = 12
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if "明天" in text:
+        candidate += timedelta(days=1)
+    elif candidate <= now:
+        candidate += timedelta(days=1)
+    return candidate.isoformat()
+
+
+def _fallback_task_plan(instruction: str) -> dict:
+    text = instruction.strip()
+    task_keywords = [
+        "打开", "检查", "执行", "创建", "生成", "整理", "统计", "发送", "发给", "通知", "安排",
+        "对接", "更新", "写", "保存", "放到", "每天", "每日", "每周", "每月", "定时", "明天",
+        "下午", "上午", "今晚", "企业微信", "企微", "飞书", "微信", "QQ", "浏览器", "表格",
+    ]
+    if not any(keyword in text for keyword in task_keywords) and not re.search(r"\d{1,2}[:：]\d{2}", text):
+        return {"action": "chat", "tasks": [], "requirements": [], "source": "fallback"}
+
+    separators = r"(?:\n+|；|;|同时|另外|并且|然后)"
+    parts = [p.strip(" ，。,.") for p in re.split(separators, text) if p.strip(" ，。,.")]
+    if not parts:
+        parts = [text]
+    if len(parts) > 6:
+        parts = [text]
+
+    tasks = []
+    for part in parts:
+        scheduled = bool(re.search(r"(每天|每日|每周|每月|定时|明天|下午|上午|\d{1,2}[:：]\d{2})", part))
+        repeat = "daily" if re.search(r"(每天|每日)", part) else ("weekly" if "每周" in part else "none")
+        tasks.append({
+            "title": part[:80],
+            "description": part,
+            "task_type": "scheduled" if scheduled else "immediate",
+            "schedule": "由AI根据任务描述判断执行时间" if scheduled else None,
+            "repeat": repeat,
+            "priority": "normal",
+            "next_run_at": _infer_next_run_at(part) if scheduled else None,
+        })
+
+    requirements = []
+    provider_keywords = [
+        ("wecom", ["企业微信", "企微"]),
+        ("feishu", ["飞书", "云文档", "在线表格", "表格"]),
+        ("wechat", ["微信"]),
+        ("qq", ["QQ", "qq"]),
+        ("browser", ["浏览器", "网页登录", "网页"]),
+    ]
+    for provider, keywords in provider_keywords:
+        if any(keyword in text for keyword in keywords):
+            requirements.append(_default_requirement(provider, text))
+
+    return {"action": "task", "tasks": tasks, "requirements": requirements, "source": "fallback"}
+
+
+def _normalize_task_plan(raw_plan: dict, instruction: str) -> dict:
+    fallback = _fallback_task_plan(instruction)
+    raw_tasks = raw_plan.get("tasks") if isinstance(raw_plan, dict) else None
+    tasks = []
+    for item in (raw_tasks if isinstance(raw_tasks, list) else []):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        description = str(item.get("description") or "").strip()
+        if not title and not description:
+            continue
+        task_type = item.get("task_type") if item.get("task_type") in {"immediate", "scheduled"} else "immediate"
+        repeat = item.get("repeat") if item.get("repeat") in {"none", "daily", "weekly"} else "none"
+        priority = item.get("priority") if item.get("priority") in {"low", "normal", "high"} else "normal"
+        tasks.append({
+            "title": (title or description)[:200],
+            "description": description,
+            "task_type": task_type,
+            "schedule": item.get("schedule") or None,
+            "repeat": repeat,
+            "priority": priority,
+            "next_run_at": item.get("next_run_at") or (_infer_next_run_at(f"{title} {description}") if task_type == "scheduled" else None),
+        })
+    action = raw_plan.get("action") if isinstance(raw_plan, dict) else None
+    action = action if action in {"chat", "task"} else ("task" if tasks else fallback.get("action", "task"))
+    if action == "chat":
+        return {"action": "chat", "tasks": [], "requirements": [], "source": raw_plan.get("source", "model")}
+
+    if not tasks:
+        tasks = fallback["tasks"]
+
+    requirements = []
+    raw_requirements = raw_plan.get("requirements") if isinstance(raw_plan, dict) else None
+    for item in (raw_requirements if isinstance(raw_requirements, list) else []):
+        if not isinstance(item, dict):
+            continue
+        provider = _normalize_provider(str(item.get("provider") or "other"))
+        req = _default_requirement(provider, instruction)
+        req["name"] = str(item.get("name") or req["name"])[:100]
+        req["account_label"] = str(item.get("account_label") or "")[:200]
+        req["reason"] = str(item.get("reason") or req["reason"])[:500]
+        method = str(item.get("access_method") or req["access_method"])
+        req["access_method"] = method if method in {"api", "web", "desktop", "manual"} else req["access_method"]
+        fields = item.get("fields")
+        if isinstance(fields, list) and fields:
+            req["fields"] = [
+                {
+                    "key": str(field.get("key") or "")[:80],
+                    "label": str(field.get("label") or field.get("key") or "")[:120],
+                    "placeholder": str(field.get("placeholder") or "")[:300],
+                    "required": bool(field.get("required")),
+                }
+                for field in fields
+                if isinstance(field, dict) and field.get("key")
+            ] or req["fields"]
+        requirements.append(req)
+
+    existing_keys = {req["provider"] for req in requirements}
+    for req in fallback["requirements"]:
+        if req["provider"] not in existing_keys:
+            requirements.append(req)
+
+    return {"action": "task", "tasks": tasks[:10], "requirements": requirements[:6], "source": raw_plan.get("source", "model")}
+
+
+async def plan_agent_tasks(db: AsyncSession, agent_id: str, instruction: str, enterprise_id: Optional[str] = None) -> dict:
+    agent = await get_agent(db, agent_id, enterprise_id=enterprise_id)
+    if not agent:
+        raise ValueError("Agent not found")
+
+    fallback = _fallback_task_plan(instruction)
+    api_key = await get_enterprise_llm_key(db, agent.enterprise_id, agent.provider)
+    provider = get_provider_config(agent.provider)
+    if not provider or not api_key:
+        return fallback
+
+    provider = dict(provider)
+    provider["api_key"] = api_key
+    prompt = f"""
+你是企业 AI 员工任务调度器。请把老板的一段自然语言拆成任务计划，并判断是否需要补充外部账号/工具资料。
+
+规则：
+0. 先判断用户是不是在安排工作。如果只是寒暄、问答、解释概念、闲聊，返回 action=chat、tasks=[]、requirements=[]。
+1. 用户只说一件事，就只能返回 1 个 task；用户明确同时说多件互相独立的事，才拆成多个 task。
+2. 判断 task_type：需要未来某个时间/每天/每周执行的是 scheduled，否则 immediate。
+3. 如果任务要发企业微信、飞书、微信、QQ、操作在线表格、发文件、打开网页后台、调用 API，而当前信息不足，返回 requirements，让前端弹框给用户补充。
+4. 如果不需要外部账号或资料，不要返回 requirements。
+5. 只返回 JSON，不要解释。
+
+今天北京时间：{now_beijing().isoformat(timespec="seconds")}
+员工：{agent.name} / {agent.department} / {agent.role}
+用户指令：{instruction}
+
+JSON 格式：
+{{
+  "action": "chat 或 task",
+  "tasks": [
+    {{
+      "title": "不超过80字",
+      "description": "完整执行说明",
+      "task_type": "immediate 或 scheduled",
+      "schedule": "定时说明，没有则 null",
+      "repeat": "none/daily/weekly",
+      "priority": "low/normal/high",
+      "next_run_at": "ISO时间或 null"
+    }}
+  ],
+  "requirements": [
+    {{
+      "provider": "feishu/wecom/qq/wechat/browser/other",
+      "name": "账号或工具名称",
+      "account_label": "",
+      "reason": "为什么需要用户补充",
+      "access_method": "api/web/desktop/manual",
+      "fields": [
+        {{"key":"account_label","label":"账号身份","placeholder":"例如 Gamma 的企业微信","required":true}}
+      ]
+    }}
+  ],
+  "source": "model"
+}}
+"""
+    try:
+        client = AsyncOpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
+        request_kwargs = {
+            "model": agent.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+        }
+        if provider.get("extra_body"):
+            request_kwargs["extra_body"] = provider["extra_body"]
+        response = await client.chat.completions.create(**request_kwargs)
+        content = response.choices[0].message.content or ""
+        return _normalize_task_plan(_json_from_text(content), instruction)
+    except Exception:
+        return fallback
 
 
 def get_tools_for_agent(agent: Agent) -> list:
@@ -146,25 +444,33 @@ async def log_operation(
     target_id: str | None = None,
     target_name: str = "",
     detail: str = "",
+    enterprise_id: str | None = None,
+    actor_agent_id: str | None = None,
+    actor_agent_name: str = "",
 ) -> None:
-    if not actor:
+    if not actor and not enterprise_id:
         return
-    actor_agent_name = ""
-    if actor.agent_id:
+    log_enterprise_id = actor.enterprise_id if actor else enterprise_id
+    actor_username = actor.username if actor else actor_agent_name
+    actor_role = actor.role if actor else "employee"
+    log_actor_agent_id = actor.agent_id if actor else actor_agent_id
+    log_actor_agent_name = actor_agent_name
+    if actor and actor.agent_id:
         agent = await db.get(Agent, actor.agent_id)
-        actor_agent_name = agent.name if agent else ""
+        log_actor_agent_name = agent.name if agent else ""
     db.add(OperationLog(
-        enterprise_id=actor.enterprise_id,
-        actor_user_id=actor.id,
-        actor_username=actor.username,
-        actor_role=actor.role,
-        actor_agent_id=actor.agent_id,
-        actor_agent_name=actor_agent_name,
+        enterprise_id=log_enterprise_id,
+        actor_user_id=actor.id if actor else None,
+        actor_username=actor_username,
+        actor_role=actor_role,
+        actor_agent_id=log_actor_agent_id,
+        actor_agent_name=log_actor_agent_name,
         action=action,
         target_type=target_type,
         target_id=target_id,
         target_name=target_name,
         detail=detail,
+        created_at=now_beijing(),
     ))
 
 
@@ -174,7 +480,7 @@ async def update_agent_profile(db: AsyncSession, agent_id: str, data: AgentProfi
         return None
     for key, value in data.model_dump().items():
         setattr(profile, key, value)
-    profile.updated_at = datetime.utcnow()
+    profile.updated_at = now_beijing()
     await db.commit()
     await db.refresh(profile)
     return profile
@@ -194,7 +500,7 @@ def _next_routine_time(schedule_type: str, schedule_time: str, from_time: Option
     if schedule_type == "cron":
         return None
 
-    base = from_time or datetime.utcnow()
+    base = from_time or now_beijing()
     hour, minute = _parse_schedule_time(schedule_time)
     candidate = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if candidate <= base:
@@ -232,7 +538,7 @@ async def create_agent_routine(db: AsyncSession, agent_id: str, data: AgentRouti
         cron_expression=data.cron_expression,
         enabled=data.enabled,
         save_conversation=data.save_conversation,
-        next_run_at=data.next_run_at or _next_routine_time(data.schedule_type, data.schedule_time),
+        next_run_at=to_beijing_naive(data.next_run_at) or _next_routine_time(data.schedule_type, data.schedule_time),
     )
     db.add(routine)
     await db.commit()
@@ -245,11 +551,13 @@ async def update_agent_routine(db: AsyncSession, routine_id: str, data: AgentRou
     if not routine:
         return None
     update_data = data.model_dump(exclude_unset=True)
+    if "next_run_at" in update_data:
+        update_data["next_run_at"] = to_beijing_naive(update_data["next_run_at"])
     for key, value in update_data.items():
         setattr(routine, key, value)
     if "next_run_at" not in update_data and any(k in update_data for k in ("schedule_type", "schedule_time", "enabled")):
         routine.next_run_at = _next_routine_time(routine.schedule_type, routine.schedule_time) if routine.enabled else None
-    routine.updated_at = datetime.utcnow()
+    routine.updated_at = now_beijing()
     await db.commit()
     await db.refresh(routine)
     return routine
@@ -294,7 +602,7 @@ async def update_agent_integration(db: AsyncSession, integration_id: str, data: 
         return None
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(integration, key, value)
-    integration.updated_at = datetime.utcnow()
+    integration.updated_at = now_beijing()
     await db.commit()
     await db.refresh(integration)
     return integration
@@ -340,11 +648,24 @@ async def build_agent_memory_context(db: AsyncSession, current_agent: Agent) -> 
 
     enabled_integrations = [i for i in integrations if i.enabled]
     if enabled_integrations:
-        lines.append("可用账号与工具：")
+        lines.append("可用账号与工具（仅属于当前员工，不与其他员工共享）：")
         for integration in enabled_integrations[:20]:
             config = integration.config or {}
-            config_hint = ", ".join(f"{k}={v}" for k, v in config.items() if v and "key" not in k.lower() and "secret" not in k.lower())
-            suffix = f"，配置：{config_hint}" if config_hint else ""
+            fields = [
+                ("账号身份", integration.account_label),
+                ("使用场景", config.get("usage_scenario") or config.get("usage_scenarios")),
+                ("默认接收人/群", config.get("default_recipients") or config.get("default_targets")),
+                ("接入方式", config.get("access_method")),
+                ("连接说明", config.get("connection_notes")),
+                ("工作规则", config.get("work_rules")),
+                ("审批规则", config.get("approval_rules")),
+                ("凭据提示", config.get("credential_hint")),
+                ("API 标识", config.get("app_id") or config.get("api_app_id") or config.get("corp_id") or config.get("webhook_url")),
+                ("密钥环境变量", config.get("secret_env") or config.get("api_secret_env")),
+                ("网页地址", config.get("login_url") or config.get("web_url")),
+            ]
+            config_hint = "；".join(f"{label}：{value}" for label, value in fields if value)
+            suffix = f"，{config_hint}" if config_hint else ""
             account = f"，账号：{integration.account_label}" if integration.account_label else ""
             lines.append(f"- {integration.name}（{integration.provider}{account}{suffix}）")
 
@@ -450,7 +771,7 @@ async def update_department(
 
     for key, value in update_data.items():
         setattr(department, key, value)
-    department.updated_at = datetime.utcnow()
+    department.updated_at = now_beijing()
 
     if "name" in update_data and update_data["name"] != old_name:
         rename_query = update(Agent).where(Agent.department == old_name)
@@ -538,7 +859,7 @@ async def update_agent(db: AsyncSession, agent_id: str, data: AgentUpdate, enter
         await ensure_department(db, update_data["department"], enterprise_id=enterprise_id)
     for key, value in update_data.items():
         setattr(agent, key, value)
-    agent.updated_at = datetime.utcnow()
+    agent.updated_at = now_beijing()
     await db.commit()
     await db.refresh(agent)
     return agent
@@ -667,7 +988,7 @@ async def chat_with_agent(
     db.add(user_msg)
     agent.status = "working"
     agent.current_task = message[:200]
-    agent.updated_at = datetime.utcnow()
+    agent.updated_at = now_beijing()
     await db.commit()
 
     # Build agent runtime
@@ -687,7 +1008,7 @@ async def chat_with_agent(
     except Exception as e:
         agent.status = "blocked"
         agent.current_task = None
-        agent.updated_at = datetime.utcnow()
+        agent.updated_at = now_beijing()
         await db.commit()
         yield AgentEvent(type="error", content=f"Agent 初始化失败: {str(e)}")
         return
@@ -745,19 +1066,20 @@ async def chat_with_agent(
     # Update agent status
     agent.status = "blocked" if had_error else "idle"
     agent.current_task = None
-    agent.updated_at = datetime.utcnow()
+    agent.updated_at = now_beijing()
+    final_output = build_execution_output(full_response, final_data)
 
     # Save assistant message
     assistant_msg = Message(
         conversation_id=conv.id,
         role="assistant",
-        content=full_response,
+        content=final_output,
         token_count=final_data.get("tokens", 0),
     )
     db.add(assistant_msg)
 
     # Update conversation
-    conv.updated_at = datetime.utcnow()
+    conv.updated_at = now_beijing()
 
     await db.commit()
 
@@ -767,6 +1089,19 @@ async def create_task(db: AsyncSession, agent_id: str, data: TaskCreate) -> Opti
     agent = await get_agent(db, agent_id)
     if not agent:
         return None
+
+    recent_duplicate = await db.execute(
+        select(Task)
+        .where(Task.agent_id == agent_id)
+        .where(Task.title == data.title)
+        .where(Task.description == data.description)
+        .where(Task.task_type == data.task_type)
+        .where(Task.created_at >= now_beijing() - timedelta(seconds=8))
+        .order_by(Task.created_at.desc())
+    )
+    existing_task = recent_duplicate.scalars().first()
+    if existing_task:
+        return existing_task
 
     conversation = None
     if data.save_conversation:
@@ -785,7 +1120,7 @@ async def create_task(db: AsyncSession, agent_id: str, data: TaskCreate) -> Opti
         priority=data.priority,
         save_conversation=data.save_conversation,
         status=TaskStatus.ASSIGNED.value,
-        next_run_at=data.next_run_at if data.task_type == "scheduled" else None,
+        next_run_at=to_beijing_naive(data.next_run_at) if data.task_type == "scheduled" else None,
     )
     db.add(task)
     await db.commit()
@@ -814,6 +1149,8 @@ async def update_task(db: AsyncSession, task_id: str, data: TaskUpdate) -> Optio
         raise ValueError("Running task cannot be edited")
 
     update_data = data.model_dump(exclude_unset=True)
+    if "next_run_at" in update_data:
+        update_data["next_run_at"] = to_beijing_naive(update_data["next_run_at"])
     for key, value in update_data.items():
         setattr(task, key, value)
 
@@ -869,25 +1206,36 @@ def _next_repeat_time(current: datetime, repeat: str) -> datetime | None:
 async def execute_task(task_id: str) -> None:
     from .database import async_session
 
+    if task_id in RUNNING_TASK_IDS:
+        return
+    RUNNING_TASK_IDS.add(task_id)
     async with async_session() as db:
-        task = await db.get(Task, task_id)
-        if not task or task.status == TaskStatus.RUNNING.value:
-            return
+        try:
+            task = await db.get(Task, task_id)
+            if not task or task.status == TaskStatus.RUNNING.value:
+                RUNNING_TASK_IDS.discard(task_id)
+                return
 
-        agent = await get_agent(db, task.agent_id)
-        if not agent:
-            task.status = TaskStatus.FAILED.value
-            task.error = "Agent not found"
-            await db.commit()
-            return
+            agent = await get_agent(db, task.agent_id)
+            if not agent:
+                task.status = TaskStatus.FAILED.value
+                task.error = "Agent not found"
+                await db.commit()
+                RUNNING_TASK_IDS.discard(task_id)
+                return
+
+            task.status = TaskStatus.RUNNING.value
+        except Exception:
+            RUNNING_TASK_IDS.discard(task_id)
+            raise
 
         task.status = TaskStatus.RUNNING.value
         task.error = None
-        task.started_at = datetime.utcnow()
+        task.started_at = now_beijing()
         task.last_run_at = task.started_at
         agent.status = "working"
         agent.current_task = task.title[:200]
-        agent.updated_at = datetime.utcnow()
+        agent.updated_at = now_beijing()
 
         if task.save_conversation and not task.conversation_id:
             conv = Conversation(agent_id=task.agent_id, title=task.title[:200])
@@ -961,10 +1309,11 @@ async def execute_task(task_id: str) -> None:
             task.error = str(e)
             full_response = f"错误: {str(e)}"
 
-        task.output = full_response
+        final_output = build_execution_output(full_response, final_data)
+        task.output = final_output
         task.iterations = int(final_data.get("iterations", 0) or 0)
         task.tokens_used = int(final_data.get("tokens", 0) or 0)
-        task.completed_at = datetime.utcnow()
+        task.completed_at = now_beijing()
 
         if task.task_type == "scheduled":
             next_run = _next_repeat_time(task.completed_at, task.repeat or "none")
@@ -980,21 +1329,22 @@ async def execute_task(task_id: str) -> None:
                 conversation_id=task.conversation_id,
                 task_id=task.id,
                 role="assistant",
-                content=full_response,
+                content=final_output,
                 token_count=task.tokens_used,
             ))
             conv = await get_conversation(db, task.conversation_id, agent_id=task.agent_id)
             if conv:
-                conv.updated_at = datetime.utcnow()
+                conv.updated_at = now_beijing()
 
         agent.status = "blocked" if had_error else "idle"
         agent.current_task = None
-        agent.updated_at = datetime.utcnow()
+        agent.updated_at = now_beijing()
         await db.commit()
+        RUNNING_TASK_IDS.discard(task_id)
 
 
 async def get_due_scheduled_tasks(db: AsyncSession) -> list[Task]:
-    now = datetime.utcnow()
+    now = now_beijing()
     result = await db.execute(
         select(Task)
         .where(Task.task_type == "scheduled")
@@ -1019,7 +1369,7 @@ async def get_assigned_immediate_tasks(db: AsyncSession) -> list[Task]:
 
 
 async def get_due_routines(db: AsyncSession) -> list[AgentRoutine]:
-    now = datetime.utcnow()
+    now = now_beijing()
     result = await db.execute(
         select(AgentRoutine)
         .where(AgentRoutine.enabled == True)  # noqa: E712
@@ -1042,8 +1392,8 @@ async def materialize_routine_task(routine_id: str) -> Optional[str]:
         if not agent:
             return None
 
-        due_at = routine.next_run_at or datetime.utcnow()
-        if due_at > datetime.utcnow():
+        due_at = routine.next_run_at or now_beijing()
+        if due_at > now_beijing():
             return None
 
         task = Task(
@@ -1063,9 +1413,9 @@ async def materialize_routine_task(routine_id: str) -> Optional[str]:
             await db.flush()
             task.conversation_id = conversation.id
 
-        routine.last_run_at = datetime.utcnow()
+        routine.last_run_at = now_beijing()
         routine.next_run_at = _next_routine_time(routine.schedule_type, routine.schedule_time, routine.last_run_at)
-        routine.updated_at = datetime.utcnow()
+        routine.updated_at = now_beijing()
         db.add(task)
         await db.commit()
         return task.id

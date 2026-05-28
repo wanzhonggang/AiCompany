@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -8,6 +8,7 @@ from ..auth import create_token, get_current_user, hash_password, verify_passwor
 from ..database import get_db
 from ..models import Enterprise, UserAccount
 from ..schemas import AuthResponse, AuthUserResponse, EnterpriseRegisterRequest, LoginRequest, PasswordChangeRequest, PasswordUpdateResponse
+from ..time_utils import now_beijing
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -52,7 +53,7 @@ async def register_enterprise(data: EnterpriseRegisterRequest, db: AsyncSession 
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="管理员账号已存在")
 
-    now = datetime.utcnow()
+    now = now_beijing()
     enterprise = Enterprise(
         name=data.enterprise_name.strip(),
         plan=data.plan,
@@ -118,6 +119,6 @@ async def change_my_password(
     if not data.old_password or not verify_password(data.old_password, user.password_hash):
         raise HTTPException(status_code=400, detail="原密码不正确")
     user.password_hash = hash_password(data.new_password)
-    user.updated_at = datetime.utcnow()
+    user.updated_at = now_beijing()
     await db.commit()
     return PasswordUpdateResponse(username=user.username)

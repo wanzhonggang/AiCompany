@@ -3,7 +3,8 @@ import hashlib
 import hmac
 import json
 import secrets
-from datetime import datetime, timedelta
+import time
+from datetime import timedelta
 from typing import Optional
 
 from fastapi import Depends, HTTPException
@@ -50,7 +51,7 @@ def create_token(user: UserAccount) -> str:
         "enterprise_id": user.enterprise_id,
         "role": user.role,
         "agent_id": user.agent_id,
-        "exp": int((datetime.utcnow() + timedelta(days=7)).timestamp()),
+        "exp": int(time.time() + timedelta(days=7).total_seconds()),
     }
     body = _b64(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
     signature = hmac.new(settings.secret_key.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
@@ -64,7 +65,7 @@ def decode_token(token: str) -> dict:
         if not hmac.compare_digest(_b64(expected), signature):
             raise ValueError("bad signature")
         payload = json.loads(_unb64(body).decode("utf-8"))
-        if int(payload.get("exp", 0)) < int(datetime.utcnow().timestamp()):
+        if int(payload.get("exp", 0)) < int(time.time()):
             raise ValueError("expired")
         return payload
     except Exception as e:

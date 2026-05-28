@@ -59,7 +59,8 @@ async def list_routines(
     current_user: UserAccount = Depends(get_current_user),
 ):
     ensure_agent_access(current_user, agent_id)
-    if not await services.get_agent(db, agent_id, enterprise_id=current_user.enterprise_id):
+    agent = await services.get_agent(db, agent_id, enterprise_id=current_user.enterprise_id)
+    if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     routines = await services.get_agent_routines(db, agent_id)
     return [AgentRoutineResponse.model_validate(item) for item in routines]
@@ -78,6 +79,16 @@ async def create_routine(
     routine = await services.create_agent_routine(db, agent_id, data)
     if not routine:
         raise HTTPException(status_code=404, detail="Agent not found")
+    await services.log_operation(
+        db,
+        current_user,
+        "新增例行任务" if current_user.role == "admin" else "AI员工新增任务",
+        "task",
+        routine.id,
+        routine.title,
+        detail=f"新增例行任务；执行员工：{agent.name}",
+    )
+    await db.commit()
     return AgentRoutineResponse.model_validate(routine)
 
 
@@ -95,9 +106,21 @@ async def update_routine(
     ensure_agent_access(current_user, agent_id)
     if not await services.get_agent(db, agent_id, enterprise_id=current_user.enterprise_id):
         raise HTTPException(status_code=404, detail="Routine not found")
+    detail = services.describe_changed_fields(data.model_dump(exclude_unset=True), {
+        "title": "标题",
+        "description": "任务说明",
+        "schedule_type": "周期",
+        "schedule_time": "执行时间",
+        "cron_expression": "Cron 表达式",
+        "enabled": "启用状态",
+        "save_conversation": "保存对话设置",
+        "next_run_at": "下次执行时间",
+    })
     routine = await services.update_agent_routine(db, routine_id, data)
     if not routine:
         raise HTTPException(status_code=404, detail="Routine not found")
+    await services.log_operation(db, current_user, "修改例行任务", "task", routine.id, routine.title, detail=detail)
+    await db.commit()
     return AgentRoutineResponse.model_validate(routine)
 
 
@@ -114,7 +137,10 @@ async def delete_routine(
     ensure_agent_access(current_user, agent_id)
     if not await services.get_agent(db, agent_id, enterprise_id=current_user.enterprise_id):
         raise HTTPException(status_code=404, detail="Routine not found")
+    target_title = routine.title
     await services.delete_agent_routine(db, routine_id)
+    await services.log_operation(db, current_user, "删除例行任务", "task", routine_id, target_title, detail="删除例行任务")
+    await db.commit()
     return {"ok": True}
 
 

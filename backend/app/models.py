@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Boolean, Integer, Enum as SAEnum
 from sqlalchemy.orm import relationship
 from .database import Base
+from .time_utils import now_beijing
 import enum
 
 
@@ -37,8 +37,8 @@ class Enterprise(Base):
     default_provider = Column(String(50), default="")
     default_model = Column(String(150), default="")
     expires_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
 
     users = relationship("UserAccount", back_populates="enterprise", cascade="all, delete-orphan")
 
@@ -54,8 +54,8 @@ class UserAccount(Base):
     agent_id = Column(String(12), ForeignKey("agents.id"), nullable=True)
     display_name = Column(String(100), default="")
     enabled = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
 
     enterprise = relationship("Enterprise", back_populates="users")
     agent = relationship("Agent")
@@ -68,8 +68,8 @@ class EnterpriseLLMKey(Base):
     enterprise_id = Column(String(12), ForeignKey("enterprises.id"), nullable=False)
     provider = Column(String(50), nullable=False)
     api_key = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
 
 
 class OperationLog(Base):
@@ -87,7 +87,7 @@ class OperationLog(Base):
     target_id = Column(String(12), nullable=True)
     target_name = Column(String(200), default="")
     detail = Column(Text, default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=now_beijing)
 
 
 class Agent(Base):
@@ -106,8 +106,8 @@ class Agent(Base):
     provider = Column(String(50), default="deepseek")
     max_iterations = Column(Integer, default=25)
     model_name = Column(String(50), default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
 
     tasks = relationship("Task", back_populates="agent", cascade="all, delete-orphan")
     conversations = relationship("Conversation", back_populates="agent", cascade="all, delete-orphan")
@@ -125,8 +125,8 @@ class Department(Base):
     name = Column(String(100), nullable=False)
     description = Column(Text, default="")
     color = Column(String(7), default="#06b6d4")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
 
 
 class ToolDefinition(Base):
@@ -163,7 +163,7 @@ class AgentProfile(Base):
     communication_rules = Column(Text, default="")
     approval_rules = Column(Text, default="")
     work_style = Column(Text, default="")
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
 
     agent = relationship("Agent", back_populates="profile")
 
@@ -182,8 +182,8 @@ class AgentRoutine(Base):
     save_conversation = Column(Boolean, default=True)
     last_run_at = Column(DateTime, nullable=True)
     next_run_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
 
     agent = relationship("Agent", back_populates="routines")
 
@@ -199,8 +199,8 @@ class AgentIntegration(Base):
     config = Column(JSON, default=dict)
     enabled = Column(Boolean, default=True)
     last_test_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
 
     agent = relationship("Agent", back_populates="integrations")
 
@@ -223,8 +223,8 @@ class Task(Base):
     error = Column(Text, nullable=True)
     iterations = Column(Integer, default=0)
     tokens_used = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    assigned_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=now_beijing)
+    assigned_at = Column(DateTime, default=now_beijing)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     next_run_at = Column(DateTime, nullable=True)
@@ -242,8 +242,8 @@ class Conversation(Base):
     agent_id = Column(String(12), ForeignKey("agents.id"), nullable=False)
     title = Column(String(200), default="新对话")
     status = Column(String(20), default="active")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
 
     agent = relationship("Agent", back_populates="conversations")
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
@@ -260,7 +260,7 @@ class Message(Base):
     tool_calls = Column(JSON, nullable=True)
     tool_call_id = Column(String(50), nullable=True)
     token_count = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=now_beijing)
 
     conversation = relationship("Conversation", back_populates="messages")
     task = relationship("Task", back_populates="messages")

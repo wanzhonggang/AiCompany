@@ -1,5 +1,3 @@
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +6,7 @@ from ..auth import hash_password, require_admin
 from ..database import get_db
 from ..models import UserAccount
 from ..schemas import AdminCreateRequest, AdminResponse
-from .. import services
+from ..time_utils import now_beijing
 
 router = APIRouter(prefix="/api/admins", tags=["admins"])
 
@@ -45,12 +43,11 @@ async def create_admin(
         role="admin",
         display_name=data.display_name.strip() or "企业管理员",
         enabled=True,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=now_beijing(),
+        updated_at=now_beijing(),
     )
     db.add(admin)
     await db.flush()
-    await services.log_operation(db, current_user, "新增管理员", "admin", admin.id, admin.username)
     await db.commit()
     await db.refresh(admin)
     return admin

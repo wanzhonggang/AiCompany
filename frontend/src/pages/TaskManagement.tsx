@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
+  beginGlobalLoading,
   deleteTask,
   getAgentTasks,
   getAgents,
@@ -8,6 +9,7 @@ import {
   type Agent,
   type TaskInfo,
 } from '../api/client'
+import { formatBeijingTime, toBeijingDate } from '../utils/time'
 
 type TaskWithAgent = TaskInfo & { agent?: Agent }
 
@@ -27,12 +29,11 @@ const REPEAT_LABEL: Record<string, string> = {
 }
 
 function displayTime(value: string | null | undefined) {
-  if (!value) return '-'
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
+  return formatBeijingTime(value)
 }
 
 function toDatetimeLocal(value: string | null | undefined) {
-  const date = value ? new Date(value) : new Date(Date.now() + 10 * 60 * 1000)
+  const date = value ? toBeijingDate(value) : new Date(Date.now() + 10 * 60 * 1000)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
@@ -64,8 +65,10 @@ export function TaskManagement({ showToast }: { showToast: (msg: string, type: s
       }))
       setAgents(agentData)
       setTasks(taskGroups.flat().sort((a, b) => {
-        const at = new Date(a.assigned_at || a.created_at || 0).getTime()
-        const bt = new Date(b.assigned_at || b.created_at || 0).getTime()
+        const aTime = a.assigned_at || a.created_at
+        const bTime = b.assigned_at || b.created_at
+        const at = aTime ? toBeijingDate(aTime).getTime() : 0
+        const bt = bTime ? toBeijingDate(bTime).getTime() : 0
         return bt - at
       }))
     } catch {
@@ -119,6 +122,7 @@ export function TaskManagement({ showToast }: { showToast: (msg: string, type: s
   const submitEdit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!editingTask || !form.title.trim()) return
+    const stopLoading = beginGlobalLoading('正在保存任务修改...')
     try {
       const nextRunAt = form.task_type === 'scheduled' ? new Date(form.next_run_at).toISOString() : null
       const updated = await updateTask(editingTask.id, {
@@ -136,17 +140,22 @@ export function TaskManagement({ showToast }: { showToast: (msg: string, type: s
       showToast('任务已更新', 'success')
     } catch (err) {
       showToast(err instanceof Error ? err.message : '更新任务失败', 'error')
+    } finally {
+      stopLoading()
     }
   }
 
   const removeTask = async (task: TaskWithAgent) => {
     if (!confirm(`确定删除任务「${task.title}」吗？`)) return
+    const stopLoading = beginGlobalLoading('正在删除任务...')
     try {
       await deleteTask(task.id)
       setTasks(prev => prev.filter(item => item.id !== task.id))
       showToast('任务已删除', 'success')
     } catch (err) {
       showToast(err instanceof Error ? err.message : '删除任务失败', 'error')
+    } finally {
+      stopLoading()
     }
   }
 

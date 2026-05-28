@@ -1,6 +1,5 @@
 import secrets
 import string
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
@@ -10,6 +9,7 @@ from ..auth import get_current_user, require_admin, hash_password
 from ..database import get_db
 from ..models import AgentToolBinding, Enterprise, UserAccount
 from ..schemas import AgentCreate, AgentUpdate, AgentResponse, StatsResponse, PasswordChangeRequest, PasswordUpdateResponse
+from ..time_utils import now_beijing
 from .. import services
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -76,7 +76,7 @@ async def create_agent(
         "agent",
         agent.id,
         agent.name,
-        detail=f"员工账号：{username}",
+        detail=f"新增员工账号：{username}；模型：{agent.provider}/{agent.model_name}",
     )
     await db.commit()
 
@@ -97,8 +97,6 @@ async def get_agent_detail(
     agent = await services.get_agent(db, agent_id, enterprise_id=current_user.enterprise_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    await services.log_operation(db, current_user, "修改AI员工", "agent", agent.id, agent.name)
-    await db.commit()
     return await _agent_to_response(db, agent)
 
 
@@ -109,12 +107,26 @@ async def update_agent(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_admin),
 ):
+    detail = services.describe_changed_fields(data.model_dump(exclude_unset=True), {
+        "name": "姓名",
+        "role": "职位",
+        "department": "部门",
+        "system_prompt": "系统提示词",
+        "status": "状态",
+        "skills": "技能",
+        "avatar_color": "头像颜色",
+        "provider": "模型厂商",
+        "model_name": "模型",
+        "max_iterations": "最大执行轮数",
+    })
     try:
         agent = await services.update_agent(db, agent_id, data, enterprise_id=current_user.enterprise_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    await services.log_operation(db, current_user, "修改AI员工", "agent", agent.id, agent.name, detail=detail)
+    await db.commit()
     return await _agent_to_response(db, agent)
 
 
@@ -129,7 +141,7 @@ async def delete_agent(
     deleted = await services.delete_agent(db, agent_id, enterprise_id=current_user.enterprise_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Agent not found")
-    await services.log_operation(db, current_user, "删除AI员工", "agent", agent_id, target_name)
+    await services.log_operation(db, current_user, "删除AI员工", "agent", agent_id, target_name, detail="删除员工及其绑定账号")
     await db.commit()
 
 
@@ -153,8 +165,8 @@ async def update_employee_password(
     if not employee:
         raise HTTPException(status_code=404, detail="员工账号不存在")
     employee.password_hash = hash_password(data.new_password)
-    employee.updated_at = datetime.utcnow()
-    await services.log_operation(db, current_user, "修改员工密码", "agent", agent.id, agent.name, detail=f"员工账号：{employee.username}")
+    employee.updated_at = now_beijing()
+    await services.log_operation(db, current_user, "修改员工密码", "agent", agent.id, agent.name, detail=f"更新登录密码；员工账号：{employee.username}")
     await db.commit()
     return PasswordUpdateResponse(username=employee.username)
 

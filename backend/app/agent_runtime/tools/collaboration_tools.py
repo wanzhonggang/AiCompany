@@ -1,9 +1,9 @@
 import asyncio
-from datetime import datetime
 from sqlalchemy import select
 
 from ...database import async_session
 from ...models import Agent, Task, TaskStatus
+from ...time_utils import now_beijing
 from .base import BaseTool, ToolSpec, ToolResult
 
 
@@ -67,7 +67,11 @@ class DelegateTaskTool(BaseTool):
             return ToolResult(success=False, error="title is required")
 
         async with async_session() as db:
-            query = select(Agent)
+            source = await db.get(Agent, current_agent_id) if current_agent_id else None
+            if not source:
+                return ToolResult(success=False, error="无法确认当前员工身份，不能委派任务")
+
+            query = select(Agent).where(Agent.enterprise_id == source.enterprise_id)
             agents = list((await db.execute(query)).scalars().all())
             keyword = target_agent_name.strip().lower()
             dept = target_department.strip().lower()
@@ -84,7 +88,6 @@ class DelegateTaskTool(BaseTool):
                 )
 
             target = candidates[0]
-            source = await db.get(Agent, current_agent_id) if current_agent_id else None
             source_text = f"委派来源：{source.name}（{source.department or '未分配'} / {source.role}）\n\n" if source else ""
 
             task = Task(
@@ -95,10 +98,24 @@ class DelegateTaskTool(BaseTool):
                 task_type="immediate",
                 priority=priority if priority in {"low", "normal", "high"} else "normal",
                 save_conversation=save_conversation,
-                assigned_at=datetime.utcnow(),
-                created_at=datetime.utcnow(),
+                assigned_at=now_beijing(),
+                created_at=now_beijing(),
             )
             db.add(task)
+            await db.flush()
+            from ...services import log_operation
+            await log_operation(
+                db,
+                None,
+                "AI员工新增任务",
+                "task",
+                task.id,
+                task.title,
+                detail=f"{source.name} 委派给 {target.name}",
+                enterprise_id=source.enterprise_id,
+                actor_agent_id=source.id,
+                actor_agent_name=source.name,
+            )
             await db.commit()
             await db.refresh(task)
 

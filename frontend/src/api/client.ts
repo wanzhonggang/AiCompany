@@ -1,5 +1,25 @@
 ﻿const BASE = '/api';
 const TOKEN_KEY = 'ai_employee_token';
+export const GLOBAL_LOADING_EVENT = 'ai-employee-global-loading';
+let loadingDepth = 0;
+
+export function beginGlobalLoading(message: string): () => void {
+  loadingDepth += 1;
+  window.dispatchEvent(new CustomEvent(GLOBAL_LOADING_EVENT, {
+    detail: { active: true, message },
+  }));
+  let closed = false;
+  return () => {
+    if (closed) return;
+    closed = true;
+    loadingDepth = Math.max(0, loadingDepth - 1);
+    if (loadingDepth === 0) {
+      window.dispatchEvent(new CustomEvent(GLOBAL_LOADING_EVENT, {
+        detail: { active: false, message: '' },
+      }));
+    }
+  };
+}
 
 function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -187,6 +207,39 @@ export interface TaskCreateInput {
 
 export type TaskUpdateInput = Partial<TaskCreateInput>;
 
+export interface SmartTaskItem {
+  title: string;
+  description: string;
+  task_type: 'immediate' | 'scheduled';
+  schedule: string | null;
+  repeat: 'none' | 'daily' | 'weekly';
+  priority: string;
+  next_run_at: string | null;
+}
+
+export interface IntegrationFieldRequirement {
+  key: string;
+  label: string;
+  placeholder: string;
+  required: boolean;
+}
+
+export interface IntegrationRequirement {
+  provider: 'feishu' | 'wecom' | 'qq' | 'wechat' | 'browser' | 'other';
+  name: string;
+  account_label: string;
+  reason: string;
+  access_method: 'api' | 'web' | 'desktop' | 'manual';
+  fields: IntegrationFieldRequirement[];
+}
+
+export interface SmartTaskPlan {
+  action: 'chat' | 'task';
+  tasks: SmartTaskItem[];
+  requirements: IntegrationRequirement[];
+  source: string;
+}
+
 export interface AgentProfile {
   agent_id: string;
   mission: string;
@@ -235,7 +288,19 @@ export interface AgentIntegration {
   provider: 'feishu' | 'wecom' | 'qq' | 'wechat' | 'browser' | 'other';
   name: string;
   account_label: string;
-  config: Record<string, unknown>;
+  config: {
+    usage_scenario?: string;
+    default_recipients?: string;
+    access_method?: string;
+    approval_rules?: string;
+    app_id?: string;
+    corp_id?: string;
+    secret_env?: string;
+    webhook_url?: string;
+    login_url?: string;
+    notes?: string;
+    [key: string]: unknown;
+  };
   enabled: boolean;
   last_test_at: string | null;
   created_at: string | null;
@@ -493,6 +558,15 @@ export async function createTask(agentId: string, data: TaskCreateInput): Promis
     body: JSON.stringify(data),
   });
   return parseJsonResponse<TaskInfo>(r, 'Failed to create task');
+}
+
+export async function planTasks(agentId: string, instruction: string, saveConversation = true): Promise<SmartTaskPlan> {
+  const r = await apiFetch(`${BASE}/tasks/${agentId}/plan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instruction, save_conversation: saveConversation }),
+  });
+  return parseJsonResponse<SmartTaskPlan>(r, 'Failed to plan task');
 }
 
 export async function updateTask(taskId: string, data: TaskUpdateInput): Promise<TaskInfo> {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  beginGlobalLoading,
   createDepartment,
   deleteDepartment,
   getAgents,
@@ -63,6 +64,7 @@ export function DepartmentManagement({ showToast }: { showToast: (msg: string, t
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!form.name.trim()) return
+    const stopLoading = beginGlobalLoading(editing ? '正在保存部门信息...' : '正在新增部门...')
     try {
       if (editing) {
         await updateDepartment(editing.id, form)
@@ -75,17 +77,22 @@ export function DepartmentManagement({ showToast }: { showToast: (msg: string, t
       await load(false)
     } catch (err) {
       showToast(err instanceof Error ? err.message : '保存部门失败', 'error')
+    } finally {
+      stopLoading()
     }
   }
 
   const remove = async (department: Department) => {
     if (!confirm(`确定删除部门「${department.name}」吗？`)) return
+    const stopLoading = beginGlobalLoading('正在删除部门...')
     try {
       await deleteDepartment(department.id)
       await load(false)
       showToast('部门已删除', 'success')
     } catch (err) {
       showToast(err instanceof Error ? err.message : '删除部门失败', 'error')
+    } finally {
+      stopLoading()
     }
   }
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   addCustomModel,
+  beginGlobalLoading,
   getLLMConfig,
   refreshLLMModels,
   saveProviderApiKey,
@@ -8,6 +9,7 @@ import {
   type LLMConfig,
   type ProviderInfo,
 } from '../api/client'
+import { formatBeijingTime } from '../utils/time'
 
 export function ModelManagement({ showToast }: { showToast: (msg: string, type: string) => void }) {
   const [config, setConfig] = useState<LLMConfig | null>(null)
@@ -58,6 +60,7 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
       showToast('请先输入 API Key', 'error')
       return
     }
+    const stopLoading = beginGlobalLoading(`正在添加 ${provider.display_name} 模型 Key...`)
     try {
       await saveProviderApiKey(provider.name, apiKey)
       setKeys(prev => ({ ...prev, [provider.name]: '' }))
@@ -65,6 +68,8 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
       showToast(`${provider.display_name} 已启用`, 'success')
     } catch (err) {
       showToast(err instanceof Error ? err.message : '保存 API Key 失败', 'error')
+    } finally {
+      stopLoading()
     }
   }
 
@@ -77,17 +82,21 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
       showToast('请先配置该厂商 API Key', 'error')
       return
     }
+    const stopLoading = beginGlobalLoading('正在设置默认模型...')
     try {
       await setDefaultModel(provider.name, model)
       await load()
       showToast('默认模型已更新', 'success')
     } catch (err) {
       showToast(err instanceof Error ? err.message : '设置默认模型失败', 'error')
+    } finally {
+      stopLoading()
     }
   }
 
   const refreshModels = async () => {
     setRefreshing(true)
+    const stopLoading = beginGlobalLoading('正在更新所有模型列表...')
     try {
       const result = await refreshLLMModels()
       setConfig(result)
@@ -97,6 +106,7 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
     } catch (err) {
       showToast(err instanceof Error ? err.message : '更新模型列表失败', 'error')
     } finally {
+      stopLoading()
       setRefreshing(false)
     }
   }
@@ -117,6 +127,7 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
       showToast('请选择厂商并填写模型名称', 'error')
       return
     }
+    const stopLoading = beginGlobalLoading('正在添加模型...')
     try {
       const result = await addCustomModel({
         provider: modelForm.provider,
@@ -130,6 +141,8 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
       showToast(result.action === 'updated' ? '模型已更新' : '模型已添加', 'success')
     } catch (err) {
       showToast(err instanceof Error ? err.message : '添加模型失败', 'error')
+    } finally {
+      stopLoading()
     }
   }
 
@@ -166,7 +179,7 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
         </div>
         <div>
           <span>上次更新</span>
-          <strong>{config.last_model_refresh_at ? new Date(config.last_model_refresh_at).toLocaleString('zh-CN', { hour12: false }) : '未同步'}</strong>
+          <strong>{config.last_model_refresh_at ? formatBeijingTime(config.last_model_refresh_at) : '未同步'}</strong>
         </div>
       </div>
 
@@ -203,7 +216,7 @@ export function ModelManagement({ showToast }: { showToast: (msg: string, type: 
           </div>
           {active.last_refreshed_at && (
             <div className="task-meta" style={{ marginBottom: 12 }}>
-              {active.display_name} 上次模型同步：{new Date(active.last_refreshed_at).toLocaleString('zh-CN', { hour12: false })}
+              {active.display_name} 上次模型同步：{formatBeijingTime(active.last_refreshed_at)}
             </div>
           )}
 

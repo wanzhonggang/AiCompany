@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { login, registerEnterprise, setToken, type AuthResult } from '../api/client'
+import { beginGlobalLoading, login, registerEnterprise, setToken, type AuthResult } from '../api/client'
 
 type Mode = 'enterprise_login' | 'enterprise_register' | 'employee_login'
 
@@ -12,6 +12,7 @@ export function Entry({
 }) {
   const [mode, setMode] = useState<Mode>('enterprise_login')
   const [loading, setLoading] = useState(false)
+  const [pointer, setPointer] = useState({ x: 50, y: 42 })
 
   const [loginForm, setLoginForm] = useState({ username: '', password: '' })
   const [registerForm, setRegisterForm] = useState({
@@ -29,6 +30,7 @@ export function Entry({
       return
     }
     setLoading(true)
+    const stopLoading = beginGlobalLoading(employee ? '正在登录员工账号...' : '正在登录企业账号...')
     try {
       const result = await login({
         username: loginForm.username.trim(),
@@ -48,6 +50,7 @@ export function Entry({
     } catch (e) {
       showToast(e instanceof Error ? e.message : '登录失败', 'error')
     } finally {
+      stopLoading()
       setLoading(false)
     }
   }
@@ -58,6 +61,7 @@ export function Entry({
       return
     }
     setLoading(true)
+    const stopLoading = beginGlobalLoading('正在注册企业并创建管理员...')
     try {
       const result = await registerEnterprise(registerForm)
       setToken(result.token)
@@ -70,15 +74,35 @@ export function Entry({
     } catch (e) {
       showToast(e instanceof Error ? e.message : '企业注册失败', 'error')
     } finally {
+      stopLoading()
       setLoading(false)
     }
   }
 
   return (
-    <div className="entry-page">
+    <div
+      className="entry-page"
+      style={{ '--entry-x': `${pointer.x}%`, '--entry-y': `${pointer.y}%` } as React.CSSProperties}
+      onMouseMove={e => {
+        const rect = e.currentTarget.getBoundingClientRect()
+        setPointer({
+          x: ((e.clientX - rect.left) / rect.width) * 100,
+          y: ((e.clientY - rect.top) / rect.height) * 100,
+        })
+      }}
+    >
+      <div className="entry-orbit entry-orbit-a" />
+      <div className="entry-orbit entry-orbit-b" />
+      <div className="entry-grid-glow" />
       <div className="entry-card">
-        <h1>AI 员工平台</h1>
-        <p>请选择登录通道</p>
+        <div className="entry-brand">
+          <img src="/logo.svg" alt="AI 员工平台" />
+          <div>
+            <div className="entry-kicker">Enterprise AI Workforce</div>
+            <h1>AI 员工平台</h1>
+            <p>企业 AI 员工、任务调度和自动化协作系统</p>
+          </div>
+        </div>
         <div className="workspace-tabs">
           <button className={mode === 'enterprise_login' ? 'active' : ''} onClick={() => setMode('enterprise_login')}>企业登录</button>
           <button className={mode === 'enterprise_register' ? 'active' : ''} onClick={() => setMode('enterprise_register')}>企业注册</button>

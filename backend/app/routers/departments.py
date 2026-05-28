@@ -54,7 +54,7 @@ async def create_department(
         department = await services.create_department(db, data, enterprise_id=current_user.enterprise_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    await services.log_operation(db, current_user, "新增部门", "department", department.id, department.name)
+    await services.log_operation(db, current_user, "新增部门", "department", department.id, department.name, detail="新增部门")
     await db.commit()
     return await _department_response(db, department, current_user.enterprise_id)
 
@@ -67,12 +67,17 @@ async def update_department(
     current_user: UserAccount = Depends(require_admin),
 ):
     try:
+        detail = services.describe_changed_fields(data.model_dump(exclude_unset=True), {
+            "name": "部门名称",
+            "description": "职责说明",
+            "color": "颜色",
+        })
         department = await services.update_department(db, department_id, data, enterprise_id=current_user.enterprise_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if not department:
         raise HTTPException(status_code=404, detail="Department not found")
-    await services.log_operation(db, current_user, "修改部门", "department", department.id, department.name)
+    await services.log_operation(db, current_user, "修改部门", "department", department.id, department.name, detail=detail)
     await db.commit()
     return await _department_response(db, department, current_user.enterprise_id)
 
@@ -91,6 +96,6 @@ async def delete_department(
         raise HTTPException(status_code=409, detail=str(e)) from e
     if not deleted:
         raise HTTPException(status_code=404, detail="Department not found")
-    await services.log_operation(db, current_user, "删除部门", "department", department_id, target_name)
+    await services.log_operation(db, current_user, "删除部门", "department", department_id, target_name, detail="删除部门")
     await db.commit()
     return {"ok": True}

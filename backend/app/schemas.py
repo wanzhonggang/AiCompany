@@ -216,6 +216,44 @@ class TaskResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SmartTaskRequest(BaseModel):
+    instruction: str = Field(..., min_length=1, max_length=20000)
+    save_conversation: bool = True
+
+
+class SmartTaskItem(BaseModel):
+    title: str
+    description: str = ""
+    task_type: str = "immediate"
+    schedule: Optional[str] = None
+    repeat: str = "none"
+    priority: str = "normal"
+    next_run_at: Optional[str] = None
+
+
+class IntegrationFieldRequirement(BaseModel):
+    key: str
+    label: str
+    placeholder: str = ""
+    required: bool = False
+
+
+class IntegrationRequirement(BaseModel):
+    provider: str
+    name: str
+    account_label: str = ""
+    reason: str = ""
+    access_method: str = "web"
+    fields: list[IntegrationFieldRequirement] = Field(default_factory=list)
+
+
+class SmartTaskPlanResponse(BaseModel):
+    action: str = "task"
+    tasks: list[SmartTaskItem]
+    requirements: list[IntegrationRequirement] = Field(default_factory=list)
+    source: str = "fallback"
+
+
 # ---- Agent memory / profile ----
 class AgentProfileUpdate(BaseModel):
     mission: str = Field(default="", max_length=8000)

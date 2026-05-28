@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import timedelta
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
@@ -24,6 +24,7 @@ from .services import (
     get_enterprise_llm_key,
     log_operation,
 )
+from .time_utils import now_beijing
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ async def seed_data():
                 plan="formal",
                 billing_period="monthly",
                 payment_status="active",
-                expires_at=datetime.utcnow() + timedelta(days=3650),
+                expires_at=now_beijing() + timedelta(days=3650),
             )
             db.add(enterprise)
             await db.flush()
@@ -340,7 +341,7 @@ async def save_provider_api_key(
     key = result.scalar_one_or_none()
     if key:
         key.api_key = api_key
-        key.updated_at = datetime.utcnow()
+        key.updated_at = now_beijing()
     else:
         db.add(EnterpriseLLMKey(
             enterprise_id=current_user.enterprise_id,
@@ -353,8 +354,8 @@ async def save_provider_api_key(
         first_model = next((m.get("name") for m in provider.get("models", []) if m.get("name")), "")
         enterprise.default_provider = provider_name
         enterprise.default_model = first_model
-        enterprise.updated_at = datetime.utcnow()
-    await log_operation(db, current_user, "保存模型Key", "model_provider", provider_name, provider.get("display_name", provider_name))
+        enterprise.updated_at = now_beijing()
+    await log_operation(db, current_user, "保存模型Key", "model_provider", provider_name, provider.get("display_name", provider_name), detail="新增或更新 API Key")
     await db.commit()
     return {"ok": True, "message": message}
 
@@ -379,8 +380,8 @@ async def set_default_model(
         raise HTTPException(status_code=404, detail="Enterprise not found")
     enterprise.default_provider = data.provider
     enterprise.default_model = data.model
-    enterprise.updated_at = datetime.utcnow()
-    await log_operation(db, current_user, "设置默认模型", "model", data.model, f"{data.provider} / {data.model}")
+    enterprise.updated_at = now_beijing()
+    await log_operation(db, current_user, "设置默认模型", "model", data.model, f"{data.provider} / {data.model}", detail="更新默认模型")
     await db.commit()
     return {"ok": True}
 
@@ -416,9 +417,17 @@ async def add_custom_model(
         models.insert(0, model_data)
         action = "created"
 
-    provider["last_refreshed_at"] = datetime.utcnow().isoformat()
+    provider["last_refreshed_at"] = now_beijing().isoformat()
     save_llm_config(config)
-    await log_operation(db, current_user, "添加模型" if action == "created" else "更新模型", "model", model_name, f"{provider.get('display_name', data.provider)} / {model_name}")
+    await log_operation(
+        db,
+        current_user,
+        "添加模型" if action == "created" else "更新模型",
+        "model",
+        model_name,
+        f"{provider.get('display_name', data.provider)} / {model_name}",
+        detail="手动新增模型" if action == "created" else "更新模型名称或说明",
+    )
     await db.commit()
     payload = await _enterprise_llm_payload(db, current_user)
     return {
@@ -459,7 +468,7 @@ def _merge_provider_models(provider: dict, fetched_ids: list[str]) -> int:
             merged.append(model)
 
     provider["models"] = merged
-    provider["last_refreshed_at"] = datetime.utcnow().isoformat()
+    provider["last_refreshed_at"] = now_beijing().isoformat()
     return changed
 
 
@@ -521,9 +530,9 @@ async def refresh_models(
                     "total": len(provider.get("models", [])),
                 })
 
-    config["last_model_refresh_at"] = datetime.utcnow().isoformat()
+    config["last_model_refresh_at"] = now_beijing().isoformat()
     save_llm_config(config)
-    await log_operation(db, current_user, "更新模型列表", "model_provider", None, "全部模型厂商")
+    await log_operation(db, current_user, "更新模型列表", "model_provider", None, "全部模型厂商", detail="同步已配置厂商的模型列表")
     await db.commit()
     payload = await _enterprise_llm_payload(db, current_user)
     return {

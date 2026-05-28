@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { createAdmin, getAdmins, type AdminAccount } from '../api/client'
+import { beginGlobalLoading, createAdmin, getAdmins, type AdminAccount } from '../api/client'
+import { formatBeijingTime } from '../utils/time'
 
 export function AdminManagement({ showToast }: { showToast: (msg: string, type: string) => void }) {
   const [admins, setAdmins] = useState<AdminAccount[]>([])
@@ -25,6 +26,7 @@ export function AdminManagement({ showToast }: { showToast: (msg: string, type: 
       showToast('账号不能为空，密码至少 6 位', 'error')
       return
     }
+    const stopLoading = beginGlobalLoading('正在创建管理员...')
     try {
       await createAdmin({
         username: form.username.trim(),
@@ -37,6 +39,8 @@ export function AdminManagement({ showToast }: { showToast: (msg: string, type: 
       showToast('管理员已创建', 'success')
     } catch (e) {
       showToast(e instanceof Error ? e.message : '创建管理员失败', 'error')
+    } finally {
+      stopLoading()
     }
   }
 
@@ -59,7 +63,7 @@ export function AdminManagement({ showToast }: { showToast: (msg: string, type: 
             <div>
               <div className="admin-name">{admin.display_name || '企业管理员'}</div>
               <div className="task-meta">{admin.username}</div>
-              <div className="task-meta">创建时间：{admin.created_at ? new Date(admin.created_at).toLocaleString('zh-CN', { hour12: false }) : '-'}</div>
+              <div className="task-meta">创建时间：{formatBeijingTime(admin.created_at)}</div>
             </div>
             <span className={`model-badge ${admin.enabled ? 'ready' : ''}`}>{admin.enabled ? '已启用' : '已停用'}</span>
           </div>

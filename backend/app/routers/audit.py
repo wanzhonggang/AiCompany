@@ -6,6 +6,8 @@ from ..auth import require_admin
 from ..database import get_db
 from ..models import OperationLog, UserAccount
 from ..schemas import OperationLogResponse
+from ..time_utils import now_beijing
+from datetime import timedelta
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])
 
@@ -20,6 +22,7 @@ async def list_operation_logs(
     result = await db.execute(
         select(OperationLog)
         .where(OperationLog.enterprise_id == current_user.enterprise_id)
+        .where(OperationLog.created_at >= now_beijing() - timedelta(days=30))
         .order_by(OperationLog.created_at.desc())
         .limit(capped_limit)
     )

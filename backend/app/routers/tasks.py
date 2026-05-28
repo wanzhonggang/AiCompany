@@ -4,10 +4,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth import ensure_agent_access, get_current_user
 from ..database import get_db
 from ..models import UserAccount
-from ..schemas import TaskCreate, TaskResponse, TaskUpdate
+from ..schemas import SmartTaskPlanResponse, SmartTaskRequest, TaskCreate, TaskResponse, TaskUpdate
 from .. import services
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+
+
+@router.post("/{agent_id}/plan", response_model=SmartTaskPlanResponse)
+async def plan_tasks(
+    agent_id: str,
+    data: SmartTaskRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(get_current_user),
+):
+    ensure_agent_access(current_user, agent_id)
+    try:
+        plan = await services.plan_agent_tasks(
+            db,
+            agent_id,
+            data.instruction,
+            enterprise_id=current_user.enterprise_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return plan
 
 
 @router.post("/{agent_id}", response_model=TaskResponse, status_code=201)
@@ -32,7 +52,7 @@ async def create_task(
         "task",
         task.id,
         task.title,
-        detail=f"执行员工：{agent.name}",
+        detail=f"新增{ '定时任务' if task.task_type == 'scheduled' else '立即任务' }；执行员工：{agent.name}",
     )
     await db.commit()
     if task.task_type == "immediate":
@@ -83,13 +103,23 @@ async def update_task(
     ensure_agent_access(current_user, existing.agent_id)
     if not await services.get_agent(db, existing.agent_id, enterprise_id=current_user.enterprise_id):
         raise HTTPException(status_code=404, detail="Task not found")
+    detail = services.describe_changed_fields(data.model_dump(exclude_unset=True), {
+        "title": "标题",
+        "description": "任务说明",
+        "task_type": "任务类型",
+        "schedule": "计划说明",
+        "repeat": "重复规则",
+        "priority": "优先级",
+        "save_conversation": "保存对话设置",
+        "next_run_at": "下次执行时间",
+    })
     try:
         task = await services.update_task(db, task_id, data)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    await services.log_operation(db, current_user, "修改任务", "task", task.id, task.title)
+    await services.log_operation(db, current_user, "修改任务", "task", task.id, task.title, detail=detail)
     await db.commit()
     return TaskResponse.model_validate(task)
 
@@ -113,6 +143,6 @@ async def delete_task(
         raise HTTPException(status_code=409, detail=str(e)) from e
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found")
-    await services.log_operation(db, current_user, "删除任务", "task", task_id, target_title)
+    await services.log_operation(db, current_user, "删除任务", "task", task_id, target_title, detail="删除任务")
     await db.commit()
     return {"ok": True}

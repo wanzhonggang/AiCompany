@@ -81,6 +81,9 @@ async def init_db():
             ))
             department_schema = (result.scalar() or "").upper()
             if "UNIQUE (NAME)" in department_schema or "NAME VARCHAR(100) UNIQUE" in department_schema:
+                result = await conn.execute(text("PRAGMA table_info(departments)"))
+                department_columns = {row[1] for row in result.fetchall()}
+                enterprise_expr = "enterprise_id" if "enterprise_id" in department_columns else "NULL"
                 await conn.execute(text(
                     "CREATE TABLE IF NOT EXISTS departments_migrated ("
                     "id VARCHAR(12) PRIMARY KEY, "
@@ -94,7 +97,7 @@ async def init_db():
                 await conn.execute(text(
                     "INSERT OR IGNORE INTO departments_migrated "
                     "(id, name, description, color, enterprise_id, created_at, updated_at) "
-                    "SELECT id, name, description, color, enterprise_id, created_at, updated_at FROM departments"
+                    f"SELECT id, name, description, color, {enterprise_expr}, created_at, updated_at FROM departments"
                 ))
                 await conn.execute(text("DROP TABLE departments"))
                 await conn.execute(text("ALTER TABLE departments_migrated RENAME TO departments"))

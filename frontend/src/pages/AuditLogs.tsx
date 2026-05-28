@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getOperationLogs, type OperationLog } from '../api/client'
+import { formatBeijingTime } from '../utils/time'
 
 const TARGET_LABEL: Record<string, string> = {
   agent: 'AI员工',
@@ -73,7 +74,7 @@ export function AuditLogs({ showToast }: { showToast: (msg: string, type: string
         </div>
         {filtered.map(log => (
           <div key={log.id} className="audit-row">
-            <span>{log.created_at ? new Date(log.created_at).toLocaleString('zh-CN', { hour12: false }) : '-'}</span>
+            <span>{formatBeijingTime(log.created_at)}</span>
             <span>
               <strong>{log.actor_agent_name || log.actor_username}</strong>
               <small>{log.actor_role === 'employee' ? 'AI员工' : '管理员'} · {log.actor_username}</small>

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { getAgents, deleteAgent, createAgent, updateAgent, updateEmployeePassword, getLLMConfig, getDepartments, type Agent, type Department, type LLMConfig } from '../api/client'
+import { beginGlobalLoading, getAgents, deleteAgent, createAgent, updateAgent, updateEmployeePassword, getLLMConfig, getDepartments, type Agent, type Department, type LLMConfig } from '../api/client'
 
 const AVATAR_COLORS = [
   "#6366f1","#8b5cf6","#06b6d4","#10b981","#f59e0b",
@@ -101,6 +101,7 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
       return
     }
 
+    const stopLoading = beginGlobalLoading(editing ? '正在保存员工信息...' : '正在添加 AI 员工...')
     try {
       if (editing) {
         await updateAgent(editing.id, {
@@ -126,17 +127,22 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
       load()
     } catch (e) {
       showToast(e instanceof Error ? e.message : '操作失败', 'error')
+    } finally {
+      stopLoading()
     }
   }
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`确定删除「${name}」吗？此操作不可撤销。`)) return
+    const stopLoading = beginGlobalLoading('正在删除 AI 员工...')
     try {
       await deleteAgent(id)
       showToast(`已删除「${name}」`, 'info')
       load()
     } catch {
       showToast('删除失败', 'error')
+    } finally {
+      stopLoading()
     }
   }
 
@@ -146,6 +152,7 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
       showToast('密码至少 6 位', 'error')
       return
     }
+    const stopLoading = beginGlobalLoading(passwordMode === 'initial' ? '正在设置员工密码...' : '正在修改员工密码...')
     try {
       await updateEmployeePassword(passwordAgent.id, employeePassword)
       showToast(passwordMode === 'initial' ? '员工密码已设置，可以登录了' : '员工密码已更新', 'success')
@@ -155,6 +162,8 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
       load(false)
     } catch (e) {
       showToast(e instanceof Error ? e.message : '修改员工密码失败', 'error')
+    } finally {
+      stopLoading()
     }
   }
 

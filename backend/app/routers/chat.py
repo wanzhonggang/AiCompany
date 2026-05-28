@@ -1,5 +1,4 @@
 import json
-from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import update
@@ -9,8 +8,9 @@ from ..auth import ensure_agent_access, get_current_user
 from ..database import get_db, async_session
 from ..models import Message, Task, UserAccount
 from ..schemas import ChatRequest, ConversationRenameRequest
-from ..services import build_org_context, get_agent, get_conversation, create_conversation, get_conversation_messages, get_tools_for_agent, get_enterprise_llm_key
+from ..services import build_execution_output, build_org_context, get_agent, get_conversation, create_conversation, get_conversation_messages, get_tools_for_agent, get_enterprise_llm_key
 from ..agent_runtime.core import AgentRuntime, AgentConfig, AgentEvent
+from ..time_utils import now_beijing
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -52,7 +52,7 @@ async def chat_with_agent(
                 db.add(user_msg)
             agent.status = "working"
             agent.current_task = data.message[:200]
-            agent.updated_at = datetime.utcnow()
+            agent.updated_at = now_beijing()
             await db.commit()
 
             tools = get_tools_for_agent(agent)
@@ -71,7 +71,7 @@ async def chat_with_agent(
             except Exception as e:
                 agent.status = "blocked"
                 agent.current_task = None
-                agent.updated_at = datetime.utcnow()
+                agent.updated_at = now_beijing()
                 await db.commit()
                 yield _sse("error", f"Agent 初始化失败: {str(e)}")
                 return
@@ -79,70 +79,88 @@ async def chat_with_agent(
             full_response = ""
             final_data = {}
             had_error = False
+            finalized = False
 
-            async for event in runtime.run_stream(data.message, history):
-                if event.type == "text_delta":
-                    full_response += event.content
-                elif event.type == "tool_cycle":
-                    tool_calls_stored = []
-                    for tc in event.data.get("tool_calls", []):
-                        tool_calls_stored.append({
-                            "id": tc["id"],
-                            "name": tc["name"],
-                            "input": tc["input"],
-                        })
+            async def finalize(interrupted: bool = False):
+                nonlocal finalized, full_response
+                if finalized:
+                    return
+                finalized = True
 
-                    if tool_calls_stored and conv:
-                        assistant_tool_msg = Message(
-                            conversation_id=conv.id,
-                            role="assistant",
-                            content=event.data.get("assistant_content") or None,
-                            tool_calls=tool_calls_stored,
-                        )
-                        db.add(assistant_tool_msg)
+                if interrupted and not full_response.strip() and not final_data.get("tool_calls"):
+                    full_response = "本次执行被中断，尚未产生可保存的文本结果。"
 
-                    if conv:
+                # Auto-title: use first user message truncated to 30 chars
+                if conv and conv.title == "新对话":
+                    conv.title = data.message[:30] + ("..." if len(data.message) > 30 else "")
+
+                agent.status = "blocked" if had_error else "idle"
+                agent.current_task = None
+                agent.updated_at = now_beijing()
+                final_output = build_execution_output(full_response, final_data)
+                if interrupted and not final_output.startswith("本次执行被中断"):
+                    final_output = f"本次执行被中断，以下是已保存的部分结果：\n{final_output}"
+
+                if conv:
+                    assistant_msg = Message(
+                        conversation_id=conv.id,
+                        role="assistant",
+                        content=final_output,
+                        token_count=final_data.get("tokens", 0),
+                    )
+                    db.add(assistant_msg)
+                    conv.updated_at = now_beijing()
+                await db.commit()
+
+            try:
+                async for event in runtime.run_stream(data.message, history):
+                    if event.type == "text_delta":
+                        full_response += event.content
+                    elif event.type == "tool_cycle":
+                        tool_calls_stored = []
                         for tc in event.data.get("tool_calls", []):
-                            tool_msg = Message(
+                            tool_calls_stored.append({
+                                "id": tc["id"],
+                                "name": tc["name"],
+                                "input": tc["input"],
+                            })
+
+                        if tool_calls_stored and conv:
+                            assistant_tool_msg = Message(
                                 conversation_id=conv.id,
-                                role="tool",
-                                content=tc.get("output", ""),
-                                tool_call_id=tc["id"],
+                                role="assistant",
+                                content=event.data.get("assistant_content") or None,
+                                tool_calls=tool_calls_stored,
                             )
-                            db.add(tool_msg)
-                    full_response = ""
-                elif event.type == "done":
-                    final_data = event.data
-                    if conv:
-                        final_data["conversation_id"] = conv.id
-                elif event.type == "error":
-                    yield _sse("error", event.content)
-                    full_response = f"错误: {event.content}"
-                    had_error = True
-                    break
+                            db.add(assistant_tool_msg)
 
-                yield _sse(event.type, event.content, event.data)
+                        if conv:
+                            for tc in event.data.get("tool_calls", []):
+                                tool_msg = Message(
+                                    conversation_id=conv.id,
+                                    role="tool",
+                                    content=tc.get("output", ""),
+                                    tool_call_id=tc["id"],
+                                )
+                                db.add(tool_msg)
+                            await db.commit()
+                        full_response = ""
+                    elif event.type == "done":
+                        final_data = event.data
+                        if conv:
+                            final_data["conversation_id"] = conv.id
+                    elif event.type == "error":
+                        yield _sse("error", event.content)
+                        full_response = f"错误: {event.content}"
+                        had_error = True
+                        break
 
-            # Auto-title: use first user message truncated to 30 chars
-            if conv and conv.title == "新对话":
-                conv.title = data.message[:30] + ("..." if len(data.message) > 30 else "")
-
-            agent.status = "blocked" if had_error else "idle"
-            agent.current_task = None
-            agent.updated_at = datetime.utcnow()
-
-            # Save assistant message FIRST (tool messages must follow it)
-            if conv:
-                assistant_msg = Message(
-                    conversation_id=conv.id,
-                    role="assistant",
-                    content=full_response,
-                    token_count=final_data.get("tokens", 0),
-                )
-                db.add(assistant_msg)
-
-                conv.updated_at = datetime.utcnow()
-            await db.commit()
+                    yield _sse(event.type, event.content, event.data)
+            except BaseException:
+                await finalize(interrupted=True)
+                raise
+            else:
+                await finalize(interrupted=False)
 
     return StreamingResponse(
         stream(),
@@ -173,7 +191,7 @@ async def rename_conversation(
     if not title:
         raise HTTPException(422, "Conversation title cannot be empty")
     conv.title = title
-    conv.updated_at = datetime.utcnow()
+    conv.updated_at = now_beijing()
     await db.commit()
     return {"ok": True}
 
