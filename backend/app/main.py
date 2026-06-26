@@ -11,7 +11,8 @@ from sqlalchemy import select
 from .auth import get_current_user, require_admin, hash_password
 from .config import get_providers_safe, load_llm_config, save_llm_config
 from .database import init_db, async_session, get_db
-from .routers import agents, chat, tools, tasks, departments, agent_memory, auth, admins, audit
+from .routers import agents, chat, tools, tasks, departments, agent_memory, auth, admins, audit, knowledge, workflows, analytics
+from .middleware import RateLimitMiddleware, SecurityHeadersMiddleware
 from .models import Agent, AgentToolBinding, ToolDefinition, Enterprise, UserAccount, Department, EnterpriseLLMKey
 from .services import (
     BUILTIN_TOOLS,
@@ -30,17 +31,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+from .task_queue import start_task_queue, stop_task_queue
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
     await seed_data()
     scheduler_task = asyncio.create_task(scheduled_task_loop())
+    await start_task_queue()
     logger.info("AI Employee Platform started")
     try:
         yield
     finally:
         scheduler_task.cancel()
+        await stop_task_queue()
     # Shutdown
 
 
@@ -209,6 +214,8 @@ async def seed_data():
 
 app = FastAPI(title="AI Employee Platform", lifespan=lifespan)
 
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RateLimitMiddleware, requests_per_minute=120)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -226,6 +233,9 @@ app.include_router(agent_memory.router)
 app.include_router(auth.router)
 app.include_router(admins.router)
 app.include_router(audit.router)
+app.include_router(knowledge.router)
+app.include_router(workflows.router)
+app.include_router(analytics.router)
 
 
 @app.get("/api/health")

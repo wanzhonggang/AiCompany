@@ -64,7 +64,7 @@
           "description": "DeepSeek 推理兼容别名"
         }
       ],
-      "last_refreshed_at": "2026-05-27T08:27:05.361478"
+      "last_refreshed_at": "2026-06-26T10:16:23.055408"
     },
     {
       "name": "dashscope",
@@ -265,5 +265,5 @@
   ],
   "default_provider": "deepseek",
   "default_model": "deepseek-v4-pro",
-  "last_model_refresh_at": "2026-05-27T08:27:09.776179"
+  "last_model_refresh_at": "2026-06-26T10:16:23.059242"
 }

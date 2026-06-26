@@ -1,8 +1,10 @@
 import uuid
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Boolean, Integer, Enum as SAEnum
-from sqlalchemy.orm import relationship
+from typing import ClassVar
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Boolean, Integer, Enum as SAEnum, Index
+from sqlalchemy.orm import relationship, validates
 from .database import Base
 from .time_utils import now_beijing
+from .security import encrypt_data, decrypt_data
 import enum
 
 
@@ -70,6 +72,30 @@ class EnterpriseLLMKey(Base):
     api_key = Column(Text, nullable=False)
     created_at = Column(DateTime, default=now_beijing)
     updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
+    
+    # Encryption helpers - use ClassVar for non-database fields
+    _api_key_plain: ClassVar[str | None] = None
+    
+    @validates("api_key")
+    def _encrypt_api_key(self, key: str, value: str) -> str:
+        if value and not value.startswith("gAAAAA"):  # Fernet tokens start with gAAAAA
+            return encrypt_data(value)
+        return value
+    
+    def get_api_key(self) -> str:
+        # Create a per-instance cache instead of classvar
+        if not hasattr(self, "_api_key_cache"):
+            if self.api_key.startswith("gAAAAA"):
+                self._api_key_cache = decrypt_data(self.api_key)
+            else:
+                self._api_key_cache = self.api_key
+        return self._api_key_cache or ""
+    
+    def set_api_key(self, value: str):
+        # Clear cache and set new value
+        if hasattr(self, "_api_key_cache"):
+            delattr(self, "_api_key_cache")
+        self.api_key = encrypt_data(value)
 
 
 class OperationLog(Base):
@@ -264,3 +290,188 @@ class Message(Base):
 
     conversation = relationship("Conversation", back_populates="messages")
     task = relationship("Task", back_populates="messages")
+
+
+class KnowledgeBase(Base):
+    __tablename__ = "knowledge_bases"
+    
+    id = Column(String(12), primary_key=True, default=gen_id)
+    enterprise_id = Column(String(12), ForeignKey("enterprises.id"), nullable=False)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, default="")
+    is_public = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
+    
+    documents = relationship("KnowledgeDocument", back_populates="knowledge_base", cascade="all, delete-orphan")
+
+
+class KnowledgeDocumentStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+    
+    id = Column(String(12), primary_key=True, default=gen_id)
+    knowledge_base_id = Column(String(12), ForeignKey("knowledge_bases.id"), nullable=False)
+    filename = Column(String(255), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    file_type = Column(String(50), nullable=False)
+    file_size = Column(Integer, default=0)
+    status = Column(String(20), default=KnowledgeDocumentStatus.PENDING.value)
+    content = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
+    
+    knowledge_base = relationship("KnowledgeBase", back_populates="documents")
+    chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
+
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+    
+    id = Column(String(12), primary_key=True, default=gen_id)
+    document_id = Column(String(12), ForeignKey("knowledge_documents.id"), nullable=False)
+    chunk_index = Column(Integer, nullable=False)
+    content = Column(Text, nullable=False)
+    embedding_id = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=now_beijing)
+    
+    document = relationship("KnowledgeDocument", back_populates="chunks")
+
+
+class Workflow(Base):
+    __tablename__ = "workflows"
+    
+    id = Column(String(12), primary_key=True, default=gen_id)
+    enterprise_id = Column(String(12), ForeignKey("enterprises.id"), nullable=False)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, default="")
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
+    
+    steps = relationship("WorkflowStep", back_populates="workflow", cascade="all, delete-orphan", order_by="WorkflowStep.order")
+    executions = relationship("WorkflowExecution", back_populates="workflow", cascade="all, delete-orphan")
+
+
+class WorkflowStepType(str, enum.Enum):
+    LLM = "llm"
+    TOOL = "tool"
+    CONDITION = "condition"
+    WAIT = "wait"
+    KNOWLEDGE_RETRIEVAL = "knowledge_retrieval"
+
+
+class WorkflowStep(Base):
+    __tablename__ = "workflow_steps"
+    
+    id = Column(String(12), primary_key=True, default=gen_id)
+    workflow_id = Column(String(12), ForeignKey("workflows.id"), nullable=False)
+    name = Column(String(200), nullable=False)
+    step_type = Column(String(50), nullable=False)
+    order = Column(Integer, nullable=False)
+    config = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
+    
+    workflow = relationship("Workflow", back_populates="steps")
+
+
+class WorkflowExecutionStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class WorkflowExecution(Base):
+    __tablename__ = "workflow_executions"
+    
+    id = Column(String(12), primary_key=True, default=gen_id)
+    workflow_id = Column(String(12), ForeignKey("workflows.id"), nullable=False)
+    status = Column(String(20), default=WorkflowExecutionStatus.PENDING.value)
+    input_data = Column(JSON, default=dict)
+    output_data = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=now_beijing)
+    
+    workflow = relationship("Workflow", back_populates="executions")
+    step_executions = relationship("WorkflowStepExecution", back_populates="execution", cascade="all, delete-orphan")
+
+
+class WorkflowStepExecution(Base):
+    __tablename__ = "workflow_step_executions"
+    
+    id = Column(String(12), primary_key=True, default=gen_id)
+    execution_id = Column(String(12), ForeignKey("workflow_executions.id"), nullable=False)
+    step_id = Column(String(12), ForeignKey("workflow_steps.id"), nullable=False)
+    status = Column(String(20), default=WorkflowExecutionStatus.PENDING.value)
+    input_data = Column(JSON, default=dict)
+    output_data = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=now_beijing)
+    
+    execution = relationship("WorkflowExecution", back_populates="step_executions")
+    step = relationship("WorkflowStep")
+
+
+class QueuedTaskStatus(str, enum.Enum):
+    PENDING = "pending"
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class QueuedTask(Base):
+    __tablename__ = "queued_tasks"
+    
+    id = Column(String(12), primary_key=True, default=gen_id)
+    enterprise_id = Column(String(12), ForeignKey("enterprises.id"), nullable=False)
+    task_type = Column(String(100), nullable=False)
+    payload = Column(JSON, default=dict)
+    status = Column(String(20), default=QueuedTaskStatus.PENDING.value)
+    result = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    priority = Column(Integer, default=0)
+    scheduled_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
+
+
+# Indexes for better query performance
+Index("idx_enterprise_llm_keys_enterprise_provider", EnterpriseLLMKey.enterprise_id, EnterpriseLLMKey.provider)
+Index("idx_agents_enterprise", Agent.enterprise_id)
+Index("idx_agents_department", Agent.department)
+Index("idx_tasks_agent", Task.agent_id)
+Index("idx_tasks_status", Task.status)
+Index("idx_messages_conversation", Message.conversation_id)
+Index("idx_conversations_agent", Conversation.agent_id)
+Index("idx_operation_logs_enterprise", OperationLog.enterprise_id)
+Index("idx_operation_logs_created", OperationLog.created_at)
+Index("idx_departments_enterprise", Department.enterprise_id)
+Index("idx_user_accounts_enterprise", UserAccount.enterprise_id)
+Index("idx_knowledge_bases_enterprise", KnowledgeBase.enterprise_id)
+Index("idx_knowledge_documents_base", KnowledgeDocument.knowledge_base_id)
+Index("idx_document_chunks_document", DocumentChunk.document_id)
+Index("idx_workflows_enterprise", Workflow.enterprise_id)
+Index("idx_workflow_steps_workflow", WorkflowStep.workflow_id)
+Index("idx_workflow_executions_workflow", WorkflowExecution.workflow_id)
+Index("idx_workflow_step_executions_execution", WorkflowStepExecution.execution_id)
+Index("idx_queued_tasks_enterprise", QueuedTask.enterprise_id)
+Index("idx_queued_tasks_status", QueuedTask.status)
+Index("idx_queued_tasks_scheduled", QueuedTask.scheduled_at)

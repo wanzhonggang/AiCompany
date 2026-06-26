@@ -8,7 +8,7 @@ from ..auth import ensure_agent_access, get_current_user
 from ..database import get_db, async_session
 from ..models import Message, Task, UserAccount
 from ..schemas import ChatRequest, ConversationRenameRequest
-from ..services import build_execution_output, build_org_context, get_agent, get_conversation, create_conversation, get_conversation_messages, get_tools_for_agent, get_enterprise_llm_key
+from ..services import build_execution_output, build_org_context, get_agent, get_conversation, create_conversation, get_conversation_messages, get_tools_for_agent, get_enterprise_llm_key, get_agent_integration_configs
 from ..agent_runtime.core import AgentRuntime, AgentConfig, AgentEvent
 from ..time_utils import now_beijing
 
@@ -57,6 +57,7 @@ async def chat_with_agent(
 
             tools = get_tools_for_agent(agent)
             org_context = await build_org_context(db, agent)
+            integration_configs = await get_agent_integration_configs(db, agent.id)
             config = AgentConfig(
                 system_prompt=f"{agent.system_prompt}\n\n{org_context}",
                 max_iterations=agent.max_iterations,
@@ -65,6 +66,7 @@ async def chat_with_agent(
                 tools=tools,
                 agent_id=agent.id,
                 api_key=await get_enterprise_llm_key(db, agent.enterprise_id, agent.provider),
+                integrations=integration_configs,
             )
             try:
                 runtime = AgentRuntime(config)

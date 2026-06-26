@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -9,14 +10,24 @@ CONFIG_FILE = BASE_DIR / "llm_config.json"
 ENV_FILE = BASE_DIR / ".env"
 LOCAL_ENV_FILE = BASE_DIR / ".env.local"
 
+# Load environment variables
+load_dotenv(dotenv_path=ENV_FILE)
+load_dotenv(dotenv_path=LOCAL_ENV_FILE, override=True)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=str(ENV_FILE))
 
     secret_key: str = "change-me-in-production"
+    encryption_key: str | None = None
+    encryption_passphrase: str = "default-change-me-in-production"
+    encryption_salt: str = "default-salt-change-me"
+    database_url: str | None = None
 
     @property
-    def database_url(self) -> str:
+    def effective_database_url(self) -> str:
+        if self.database_url:
+            return self.database_url
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         db_path = DATA_DIR / "ai_employees.db"
         return f"sqlite+aiosqlite:///{db_path}"

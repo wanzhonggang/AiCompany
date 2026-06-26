@@ -74,7 +74,8 @@ async def create_routine(
     current_user: UserAccount = Depends(get_current_user),
 ):
     ensure_agent_access(current_user, agent_id)
-    if not await services.get_agent(db, agent_id, enterprise_id=current_user.enterprise_id):
+    agent = await services.get_agent(db, agent_id, enterprise_id=current_user.enterprise_id)
+    if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     routine = await services.create_agent_routine(db, agent_id, data)
     if not routine:

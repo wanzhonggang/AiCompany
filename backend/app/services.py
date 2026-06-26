@@ -41,6 +41,12 @@ from .agent_runtime.tools.file_tools import ReadFileTool, WriteFileTool, ListDir
 from .agent_runtime.tools.web_tools import WebSearchTool, WebFetchTool
 from .agent_runtime.tools.email_tools import SendEmailTool
 from .agent_runtime.tools.collaboration_tools import DelegateTaskTool
+from .agent_runtime.tools.im_tools import (
+    WeChatWorkTool,
+    FeishuTool,
+    QQBotTool,
+    WeChatBotTool,
+)
 from .agent_runtime.tools.browser_tools import (
     BrowserOpenTool,
     BrowserClickTool,
@@ -65,6 +71,10 @@ BUILTIN_TOOLS = [
     BrowserCloseTool(),
     DelegateTaskTool(),
     SendEmailTool(),
+    WeChatWorkTool(),
+    FeishuTool(),
+    QQBotTool(),
+    WeChatBotTool(),
 ]
 
 TOOL_MAP = {t.name: t for t in BUILTIN_TOOLS}
@@ -226,6 +236,42 @@ def _fallback_task_plan(instruction: str) -> dict:
     return {"action": "task", "tasks": tasks, "requirements": requirements, "source": "fallback"}
 
 
+def _looks_like_internal_delegation(
+    instruction: str,
+    agents: list[Agent],
+    departments: list[Department],
+    current_agent_id: str,
+) -> bool:
+    text = instruction.strip().lower()
+    if not text:
+        return False
+
+    delegation_keywords = [
+        "告诉", "通知", "转告", "说下", "说一下", "让", "安排", "派给", "交给", "委派",
+        "对接", "转交", "协同", "配合", "问一下", "叫", "找",
+    ]
+    if not any(keyword in text for keyword in delegation_keywords):
+        return False
+
+    target_terms = {"秘书", "员工", "同事", "部门", "主管", "负责人"}
+    for agent in agents:
+        if agent.id == current_agent_id:
+            continue
+        for value in (agent.name, agent.role, agent.department):
+            value = (value or "").strip().lower()
+            if value:
+                target_terms.add(value)
+                for part in re.split(r"[\s/（()）_-]+", value):
+                    if len(part) >= 2:
+                        target_terms.add(part)
+    for department in departments:
+        value = (department.name or "").strip().lower()
+        if value:
+            target_terms.add(value)
+
+    return any(term and term in text for term in target_terms)
+
+
 def _normalize_task_plan(raw_plan: dict, instruction: str) -> dict:
     fallback = _fallback_task_plan(instruction)
     raw_tasks = raw_plan.get("tasks") if isinstance(raw_plan, dict) else None
@@ -295,6 +341,11 @@ async def plan_agent_tasks(db: AsyncSession, agent_id: str, instruction: str, en
     agent = await get_agent(db, agent_id, enterprise_id=enterprise_id)
     if not agent:
         raise ValueError("Agent not found")
+
+    peer_agents = await get_agents(db, enterprise_id=agent.enterprise_id)
+    departments = await get_departments(db, enterprise_id=agent.enterprise_id)
+    if _looks_like_internal_delegation(instruction, peer_agents, departments, agent.id):
+        return {"action": "chat", "tasks": [], "requirements": [], "source": "internal_collaboration"}
 
     fallback = _fallback_task_plan(instruction)
     api_key = await get_enterprise_llm_key(db, agent.enterprise_id, agent.provider)
@@ -383,7 +434,7 @@ async def get_enterprise_llm_key(db: AsyncSession, enterprise_id: str | None, pr
         .where(EnterpriseLLMKey.provider == provider_name)
     )
     key = result.scalar_one_or_none()
-    return key.api_key if key else ""
+    return key.get_api_key() if key else ""
 
 
 async def _validate_agent_model(db: AsyncSession, enterprise_id: str | None, provider_name: str, model_name: str) -> None:
@@ -577,6 +628,27 @@ async def get_agent_integrations(db: AsyncSession, agent_id: str) -> list[AgentI
         select(AgentIntegration).where(AgentIntegration.agent_id == agent_id).order_by(AgentIntegration.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+async def get_agent_integration_configs(db: AsyncSession, agent_id: str) -> dict:
+    """Build integration config dict for AgentRuntime: provider -> config dict"""
+    integrations = await get_agent_integrations(db, agent_id)
+    configs = {}
+    for integ in integrations:
+        if not integ.enabled:
+            continue
+        # Map provider names to internal keys
+        provider_key = integ.provider
+        if provider_key == "wecom":
+            provider_key = "wechat_work"
+        elif provider_key == "feishu":
+            provider_key = "feishu"
+        elif provider_key == "qq":
+            provider_key = "qq"
+        elif provider_key == "wechat":
+            provider_key = "wechat"
+        configs[provider_key] = integ.config or {}
+    return configs
 
 
 async def create_agent_integration(db: AsyncSession, agent_id: str, data: AgentIntegrationCreate) -> Optional[AgentIntegration]:
@@ -994,6 +1066,7 @@ async def chat_with_agent(
     # Build agent runtime
     tools = get_tools_for_agent(agent)
     org_context = await build_org_context(db, agent)
+    integration_configs = await get_agent_integration_configs(db, agent.id)
     config = AgentConfig(
         system_prompt=f"{agent.system_prompt}\n\n{org_context}",
         max_iterations=agent.max_iterations,
@@ -1002,6 +1075,7 @@ async def chat_with_agent(
         tools=tools,
         agent_id=agent.id,
         api_key=await get_enterprise_llm_key(db, agent.enterprise_id, agent.provider),
+        integrations=integration_configs,
     )
     try:
         runtime = AgentRuntime(config)
@@ -1255,6 +1329,7 @@ async def execute_task(task_id: str) -> None:
 
         tools = get_tools_for_agent(agent)
         org_context = await build_org_context(db, agent)
+        integration_configs = await get_agent_integration_configs(db, agent.id)
         config = AgentConfig(
             system_prompt=f"{agent.system_prompt}\n\n{org_context}",
             max_iterations=agent.max_iterations,
@@ -1263,6 +1338,7 @@ async def execute_task(task_id: str) -> None:
             tools=tools,
             agent_id=agent.id,
             api_key=await get_enterprise_llm_key(db, agent.enterprise_id, agent.provider),
+            integrations=integration_configs,
         )
 
         full_response = ""

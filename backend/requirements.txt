@@ -9,3 +9,16 @@ httpx
 playwright
 python-multipart
 sse-starlette
+alembic
+cryptography
+python-dotenv
+sentence-transformers
+chromadb
+langchain
+pillow
+python-docx
+openpyxl
+PyPDF2
+taskiq
+taskiq-aio-pika
+aio-pika

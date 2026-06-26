@@ -702,3 +702,180 @@ export async function getTools(): Promise<ToolDef[]> {
   const r = await apiFetch(`${BASE}/tools`);
   return parseJsonResponse<ToolDef[]>(r, 'Failed to load tools');
 }
+
+// ---- Knowledge Base ----
+export interface KnowledgeBase {
+  id: string;
+  enterprise_id: string;
+  name: string;
+  description: string;
+  is_public: boolean;
+  document_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  knowledge_base_id: string;
+  filename: string;
+  file_type: string;
+  file_size: number;
+  status: string;
+  error_message: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface KnowledgeRetrievalResult {
+  chunk: {
+    id: string;
+    document_id: string;
+    chunk_index: number;
+    content: string;
+    created_at: string | null;
+  };
+  document: KnowledgeDocument;
+  score: number;
+}
+
+export async function getKnowledgeBases(): Promise<KnowledgeBase[]> {
+  const r = await apiFetch(`${BASE}/knowledge/bases`);
+  return parseJsonResponse<KnowledgeBase[]>(r, 'Failed to load knowledge bases');
+}
+
+export async function createKnowledgeBase(data: { name: string; description?: string; is_public?: boolean }): Promise<KnowledgeBase> {
+  const r = await apiFetch(`${BASE}/knowledge/bases`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<KnowledgeBase>(r, 'Failed to create knowledge base');
+}
+
+export async function getKnowledgeDocuments(kbId: string): Promise<KnowledgeDocument[]> {
+  const r = await apiFetch(`${BASE}/knowledge/bases/${kbId}/documents`);
+  return parseJsonResponse<KnowledgeDocument[]>(r, 'Failed to load documents');
+}
+
+export async function uploadDocument(kbId: string, file: File): Promise<KnowledgeDocument> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const r = await apiFetch(`${BASE}/knowledge/bases/${kbId}/documents`, {
+    method: 'POST',
+    body: formData,
+  });
+  return parseJsonResponse<KnowledgeDocument>(r, 'Failed to upload document');
+}
+
+export async function searchKnowledge(query: string, kbIds?: string[]): Promise<{ query: string; results: KnowledgeRetrievalResult[] }> {
+  const r = await apiFetch(`${BASE}/knowledge/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, knowledge_base_ids: kbIds, top_k: 5 }),
+  });
+  return parseJsonResponse<{ query: string; results: KnowledgeRetrievalResult[] }>(r, 'Failed to search knowledge');
+}
+
+// ---- Workflows ----
+export interface WorkflowStep {
+  id: string;
+  workflow_id: string;
+  name: string;
+  step_type: string;
+  order: number;
+  config: Record<string, unknown>;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface Workflow {
+  id: string;
+  enterprise_id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  steps: WorkflowStep[];
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface WorkflowExecution {
+  id: string;
+  workflow_id: string;
+  status: string;
+  input_data: Record<string, unknown>;
+  output_data: Record<string, unknown> | null;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string | null;
+}
+
+export async function getWorkflows(): Promise<Workflow[]> {
+  const r = await apiFetch(`${BASE}/workflows`);
+  return parseJsonResponse<Workflow[]>(r, 'Failed to load workflows');
+}
+
+export async function createWorkflow(data: { name: string; description?: string; enabled?: boolean; steps?: WorkflowStep[] }): Promise<Workflow> {
+  const r = await apiFetch(`${BASE}/workflows`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<Workflow>(r, 'Failed to create workflow');
+}
+
+export async function executeWorkflow(workflowId: string, inputData: Record<string, unknown> = {}): Promise<WorkflowExecution> {
+  const r = await apiFetch(`${BASE}/workflows/${workflowId}/executions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input_data: inputData }),
+  });
+  return parseJsonResponse<WorkflowExecution>(r, 'Failed to execute workflow');
+}
+
+export async function getWorkflowExecutions(workflowId: string): Promise<WorkflowExecution[]> {
+  const r = await apiFetch(`${BASE}/workflows/${workflowId}/executions`);
+  return parseJsonResponse<WorkflowExecution[]>(r, 'Failed to load executions');
+}
+
+// ---- Analytics ----
+export interface DashboardStats {
+  agents: {
+    total_agents: number;
+    idle_agents: number;
+    working_agents: number;
+    blocked_agents: number;
+  };
+  tasks: {
+    total_tasks: number;
+    pending_tasks: number;
+    assigned_tasks: number;
+    running_tasks: number;
+    completed_tasks: number;
+    failed_tasks: number;
+  };
+  conversations: {
+    total_conversations: number;
+    total_messages: number;
+  };
+  recent_activities: Array<{
+    action: string;
+    target_type: string;
+    target_name: string;
+    detail: string;
+    created_at: string | null;
+    actor_username: string;
+  }>;
+  daily_stats: Array<{
+    date: string;
+    conversations: number;
+    tasks: number;
+  }>;
+}
+
+export async function getDashboardStats(): Promise<DashboardStats> {
+  const r = await apiFetch(`${BASE}/analytics/dashboard`);
+  return parseJsonResponse<DashboardStats>(r, 'Failed to load dashboard stats');
+}

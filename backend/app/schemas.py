@@ -351,3 +351,184 @@ class StatsResponse(BaseModel):
     idle: int
     blocked: int
     completed: int
+
+
+# ---- Knowledge Base ----
+class KnowledgeBaseCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    description: str = Field(default="", max_length=5000)
+    is_public: bool = False
+
+
+class KnowledgeBaseUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=5000)
+    is_public: Optional[bool] = None
+
+
+class KnowledgeBaseResponse(BaseModel):
+    id: str
+    enterprise_id: str
+    name: str
+    description: str
+    is_public: bool
+    document_count: int = 0
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+class KnowledgeDocumentResponse(BaseModel):
+    id: str
+    knowledge_base_id: str
+    filename: str
+    file_type: str
+    file_size: int
+    status: str
+    error_message: Optional[str] = None
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+class DocumentChunkResponse(BaseModel):
+    id: str
+    document_id: str
+    chunk_index: int
+    content: str
+    created_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+class KnowledgeRetrievalRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=5000)
+    knowledge_base_ids: Optional[List[str]] = None
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
+class KnowledgeRetrievalResult(BaseModel):
+    chunk: DocumentChunkResponse
+    document: KnowledgeDocumentResponse
+    score: float
+
+
+class KnowledgeRetrievalResponse(BaseModel):
+    query: str
+    results: List[KnowledgeRetrievalResult]
+
+
+# ---- Workflow ----
+class WorkflowStepCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    step_type: str = Field(..., min_length=1, max_length=50)
+    order: int = Field(..., ge=0)
+    config: dict = Field(default_factory=dict)
+
+
+class WorkflowStepUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    step_type: Optional[str] = Field(default=None, min_length=1, max_length=50)
+    order: Optional[int] = Field(default=None, ge=0)
+    config: Optional[dict] = None
+
+
+class WorkflowStepResponse(BaseModel):
+    id: str
+    workflow_id: str
+    name: str
+    step_type: str
+    order: int
+    config: dict
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+class WorkflowCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    description: str = Field(default="", max_length=5000)
+    enabled: bool = True
+    steps: List[WorkflowStepCreate] = Field(default_factory=list)
+
+
+class WorkflowUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=5000)
+    enabled: Optional[bool] = None
+
+
+class WorkflowResponse(BaseModel):
+    id: str
+    enterprise_id: str
+    name: str
+    description: str
+    enabled: bool
+    steps: List[WorkflowStepResponse] = Field(default_factory=list)
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+class WorkflowExecutionCreate(BaseModel):
+    workflow_id: Optional[str] = Field(default=None, min_length=1, max_length=12)
+    input_data: dict = Field(default_factory=dict)
+
+
+class WorkflowExecutionResponse(BaseModel):
+    id: str
+    workflow_id: str
+    status: str
+    input_data: dict
+    output_data: Optional[dict] = None
+    error_message: Optional[str] = None
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    created_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+class WorkflowStepExecutionResponse(BaseModel):
+    id: str
+    execution_id: str
+    step_id: str
+    status: str
+    input_data: dict
+    output_data: Optional[dict] = None
+    error_message: Optional[str] = None
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    created_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+# ---- Queued Task ----
+class QueuedTaskCreate(BaseModel):
+    task_type: str = Field(..., min_length=1, max_length=100)
+    payload: dict = Field(default_factory=dict)
+    priority: int = Field(default=0, ge=0)
+    scheduled_at: Optional[datetime] = None
+
+
+class QueuedTaskResponse(BaseModel):
+    id: str
+    enterprise_id: str
+    task_type: str
+    payload: dict
+    status: str
+    result: Optional[dict] = None
+    error_message: Optional[str] = None
+    priority: int
+    scheduled_at: Optional[datetime]
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}

@@ -46,6 +46,7 @@ interface ChatMessage {
 }
 
 type ExecutionStatus = 'active' | 'done' | 'error'
+type StreamMode = 'chat' | 'internal_collaboration'
 
 interface ExecutionEvent {
   id: string
@@ -271,6 +272,8 @@ export function AgentChat({
   const abortRef = useRef<AbortController | null>(null)
   const initialConversationLoadedRef = useRef<string | null>(null)
   const streamingTextStartedRef = useRef(false)
+  const streamToolCallCountRef = useRef(0)
+  const streamModeRef = useRef<StreamMode>('chat')
   const taskCreatingRef = useRef(false)
 
   const appendExecutionEvent = useCallback((
@@ -290,6 +293,17 @@ export function AgentChat({
         createdAt: new Date().toISOString(),
       },
     ])
+  }, [])
+
+  const setWaitingForClarification = useCallback((content: string) => {
+    setExecutionEvents([{
+      id: `${Date.now()}-clarification`,
+      type: 'clarification',
+      title: '等待补充信息',
+      content,
+      status: 'done',
+      createdAt: new Date().toISOString(),
+    }])
   }, [])
 
   const startInputResize = (startY: number) => {
@@ -498,6 +512,8 @@ export function AgentChat({
     setMessages(prev => [...prev, userMsg])
     setExecutionEvents([])
     streamingTextStartedRef.current = false
+    streamToolCallCountRef.current = 0
+    streamModeRef.current = 'chat'
     appendExecutionEvent('queued', '已接收任务', content, 'active')
     setInput('')
     setSending(true)
@@ -557,7 +573,12 @@ export function AgentChat({
         await loadWorkspace(false)
         return
       }
-      appendExecutionEvent('chat_mode', '普通对话', '未识别为工作安排，继续由员工直接回复。', 'done')
+      if (plan.source === 'internal_collaboration') {
+        streamModeRef.current = 'internal_collaboration'
+        appendExecutionEvent('internal_collaboration', '内部协作', '已识别为员工之间的通知、委派或对接，将由当前员工直接调度目标员工。', 'done')
+      } else {
+        appendExecutionEvent('chat_mode', '普通对话', '未识别为工作安排，继续由员工直接回复。', 'done')
+      }
     } catch {
       appendExecutionEvent('chat_mode', '继续对话', '任务规划不可用，已切换为直接对话。', 'done')
     }
@@ -571,9 +592,11 @@ export function AgentChat({
         const eventData = data.data || {}
         switch (eventType) {
           case 'thinking':
+            if (streamModeRef.current === 'internal_collaboration') break
             appendExecutionEvent(eventType, '正在分析', data.content || '正在理解任务目标和可用工具', 'active')
             break
           case 'tool_use':
+            streamToolCallCountRef.current += 1
             appendExecutionEvent(
               eventType,
               '准备调用工具',
@@ -593,7 +616,7 @@ export function AgentChat({
             appendExecutionEvent(eventType, '工具步骤完成', data.content || eventData.tool_calls, 'done')
             break
           case 'text_delta':
-            if (!streamingTextStartedRef.current) {
+            if (!streamingTextStartedRef.current && streamToolCallCountRef.current > 0) {
               streamingTextStartedRef.current = true
               appendExecutionEvent(eventType, '正在生成回复', 'AI 已开始输出本次任务结果', 'active')
             }
@@ -603,7 +626,8 @@ export function AgentChat({
             break
           case 'done': {
             setAgent(prev => prev ? { ...prev, status: 'idle', current_task: null } : prev)
-            const { conversation_id } = data.data as Record<string, unknown>
+            const doneData = data.data as Record<string, unknown>
+            const { conversation_id } = doneData
             if (saveConversation && conversation_id && !conversationId) {
               setConversationId(conversation_id as string)
               setDraftConversation(false)
@@ -611,7 +635,15 @@ export function AgentChat({
             if (saveConversation) {
               getConversations(id).then(setConvs).catch(() => {})
             }
-            appendExecutionEvent(eventType, '执行完成', data.content || '本次任务已结束，结果已写入对话或任务记录。', 'done')
+            const finalToolCalls = Array.isArray(doneData.tool_calls) ? doneData.tool_calls.length : 0
+            const hasExecutedWork = streamToolCallCountRef.current > 0 || finalToolCalls > 0
+            if (hasExecutedWork) {
+              appendExecutionEvent(eventType, '执行完成', data.content || '本次任务已结束，结果已写入对话或任务记录。', 'done')
+            } else if (streamModeRef.current === 'internal_collaboration') {
+              setWaitingForClarification('员工正在向你确认缺失条件，补充后再继续委派或执行。')
+            } else {
+              setExecutionEvents([])
+            }
             setMessages(prev => prev.map(m =>
               m.id === assistantId && !m.content
                 ? { ...m, content: '任务已完成。模型没有返回额外文字结果，请查看上方执行进度或左侧任务记录。' }
@@ -984,7 +1016,7 @@ export function AgentChat({
   if (!agent) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>未找到 AI 员工</div>
 
   return (
-    <div className={readOnlyProfile ? 'employee-chat-page' : undefined}>
+    <div className={`agent-chat-page ${readOnlyProfile ? 'employee-chat-page' : 'admin-agent-chat-page'}`}>
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {!readOnlyProfile && <Link to="/office" className="btn btn-ghost btn-sm">← 返回办公室</Link>}
