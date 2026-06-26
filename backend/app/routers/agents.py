@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import get_current_user, require_admin, hash_password
 from ..database import get_db
-from ..models import AgentToolBinding, Enterprise, UserAccount
+from ..models import AgentToolBinding, Enterprise, UserAccount, Workstation
 from ..schemas import AgentCreate, AgentUpdate, AgentResponse, StatsResponse, PasswordChangeRequest, PasswordUpdateResponse
 from ..time_utils import now_beijing
 from .. import services
@@ -173,6 +173,7 @@ async def update_employee_password(
 
 async def _agent_to_response(db: AsyncSession, agent) -> AgentResponse:
     employee = await _get_employee_user(db, agent.id)
+    workstation = await db.get(Workstation, agent.workstation_id) if agent.workstation_id else None
     tool_count = (await db.execute(
         select(func.count(AgentToolBinding.id)).where(AgentToolBinding.agent_id == agent.id)
     )).scalar() or 0
@@ -192,6 +193,11 @@ async def _agent_to_response(db: AsyncSession, agent) -> AgentResponse:
         tool_count=tool_count,
         employee_username=employee.username if employee else None,
         employee_init_password=None,
+        runtime_mode=agent.runtime_mode or "local_client",
+        workstation_id=agent.workstation_id,
+        workstation_name=workstation.name if workstation else None,
+        workstation_kind=workstation.kind if workstation else None,
+        workstation_status=workstation.status if workstation else None,
         created_at=agent.created_at,
         updated_at=agent.updated_at,
     )

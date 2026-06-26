@@ -11,6 +11,7 @@ import { DepartmentManagement } from './pages/DepartmentManagement'
 import { Entry } from './pages/Entry'
 import { AdminManagement } from './pages/AdminManagement'
 import { AuditLogs } from './pages/AuditLogs'
+import { DownloadCenter } from './pages/DownloadCenter'
 
 function Sidebar({ onSettings }: { onSettings: () => void }) {
   const location = useLocation()
@@ -20,6 +21,7 @@ function Sidebar({ onSettings }: { onSettings: () => void }) {
     { to: '/agents', label: '🤖 AI 员工', exact: false },
     { to: '/departments', label: '🏬 部门管理', exact: false },
     { to: '/tasks', label: '📋 任务管理', exact: false },
+    { to: '/environment', label: '💻 工作环境', exact: false },
     { to: '/models', label: '🧠 模型管理', exact: false },
     { to: '/admins', label: '🛡 管理员管理', exact: false },
     { to: '/audit', label: '🧾 操作记录', exact: false },
@@ -214,6 +216,7 @@ export default function App() {
             <Route path="/agents" element={<Agents showToast={showToast} />} />
             <Route path="/departments" element={<DepartmentManagement showToast={showToast} />} />
             <Route path="/tasks" element={<TaskManagement showToast={showToast} />} />
+            <Route path="/environment" element={<DownloadCenter showToast={showToast} />} />
             <Route path="/models" element={<ModelManagement showToast={showToast} />} />
             <Route path="/admins" element={<AdminManagement showToast={showToast} />} />
             <Route path="/audit" element={<AuditLogs showToast={showToast} />} />

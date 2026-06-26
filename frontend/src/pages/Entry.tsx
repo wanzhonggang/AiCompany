@@ -110,7 +110,14 @@ export function Entry({
         </div>
 
         {(mode === 'enterprise_login' || mode === 'employee_login') && (
-          <div className="task-form" style={{ marginTop: 16 }}>
+          <form
+            className="task-form"
+            style={{ marginTop: 16 }}
+            onSubmit={e => {
+              e.preventDefault()
+              submitLogin(mode === 'employee_login')
+            }}
+          >
             <label>
               <span>{mode === 'employee_login' ? '员工账号' : '管理员账号'}</span>
               <input
@@ -130,10 +137,10 @@ export function Entry({
                 placeholder="请输入密码"
               />
             </label>
-            <button className="btn btn-primary" onClick={() => submitLogin(mode === 'employee_login')} disabled={loading}>
+            <button className="btn btn-primary" type="submit" disabled={loading}>
               {loading ? '提交中...' : '登录'}
             </button>
-          </div>
+          </form>
         )}
 
         {mode === 'enterprise_register' && (

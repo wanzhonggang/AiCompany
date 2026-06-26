@@ -256,6 +256,57 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   padding: 2px 10px; border-radius: 999px; font-size: 0.75rem;
 }
 .card-actions { display: flex; gap: 8px; margin-top: 12px; }
+.card-workstation {
+  display: grid;
+  gap: 3px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(6,182,212,0.18);
+  border-radius: var(--radius-sm);
+  background: rgba(6,182,212,0.07);
+}
+.card-workstation span {
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+.card-workstation strong {
+  color: var(--text-primary);
+  font-size: 0.84rem;
+}
+.card-workstation em {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  font-style: normal;
+}
+.agent-runtime-box {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(6,182,212,0.18);
+  border-radius: var(--radius-sm);
+  background: rgba(15,23,42,0.48);
+}
+.runtime-choice {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.runtime-choice button {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  padding: 10px 12px;
+  text-align: left;
+  font-weight: 700;
+}
+.runtime-choice button.active {
+  border-color: var(--accent);
+  color: var(--text-primary);
+  background: rgba(6,182,212,0.14);
+}
 
 /* ---- Admin / Audit ---- */
 .admin-grid {
@@ -324,6 +375,262 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   font-weight: 700;
 }
 
+/* ---- Client Download / Workstations ---- */
+.computer-management-wrap {
+  position: relative;
+}
+.computer-management-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  display: grid;
+  gap: 6px;
+  width: 280px;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: rgba(15,23,42,0.98);
+  box-shadow: 0 20px 44px rgba(2,6,23,0.38);
+}
+.computer-management-menu button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.computer-management-menu button:hover {
+  background: rgba(6,182,212,0.1);
+}
+.computer-management-menu strong {
+  font-size: 0.88rem;
+}
+.computer-management-menu span {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+.client-hero {
+  display: grid;
+  grid-template-columns: minmax(320px, 1.2fr) minmax(260px, 0.8fr);
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.client-package {
+  position: relative;
+  overflow: visible;
+  border: 1px solid rgba(6,182,212,0.26);
+  border-radius: var(--radius);
+  padding: 28px;
+  background:
+    radial-gradient(circle at 90% 16%, rgba(34,211,238,0.2), transparent 25%),
+    linear-gradient(135deg, rgba(15,23,42,0.96), rgba(30,41,59,0.92));
+  box-shadow: 0 18px 46px rgba(2,6,23,0.28);
+}
+.client-package p {
+  max-width: 760px;
+  color: var(--text-secondary);
+}
+.client-action-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+.computer-management-modal {
+  max-width: 620px;
+}
+.computer-management-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.computer-management-options button {
+  min-height: 132px;
+  padding: 18px;
+  border: 1px solid rgba(6,182,212,0.22);
+  border-radius: var(--radius-sm);
+  background:
+    radial-gradient(circle at 90% 12%, rgba(34,211,238,0.16), transparent 30%),
+    rgba(15,23,42,0.62);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.computer-management-options button:hover {
+  border-color: rgba(6,182,212,0.52);
+  background:
+    radial-gradient(circle at 90% 12%, rgba(34,211,238,0.22), transparent 34%),
+    rgba(15,23,42,0.82);
+}
+.computer-management-options strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 1.02rem;
+}
+.computer-management-options span {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  line-height: 1.6;
+}
+.client-chip {
+  display: inline-flex;
+  width: fit-content;
+  padding: 4px 10px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(6,182,212,0.12);
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+.client-flow {
+  display: grid;
+  gap: 10px;
+}
+.client-flow div {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: var(--bg-secondary);
+}
+.client-flow span {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #06121f;
+  font-weight: 900;
+}
+.client-flow strong { font-size: 0.9rem; }
+.workstation-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.workstation-stats div {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+  padding: 16px;
+}
+.workstation-stats span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.workstation-stats strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 1.5rem;
+}
+.workstation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+.workstation-card {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, rgba(30,41,59,0.96), rgba(15,23,42,0.96));
+  padding: 18px;
+}
+.workstation-card.cloud {
+  border-color: rgba(99,102,241,0.35);
+}
+.workstation-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.workstation-card h3 {
+  margin-top: 8px;
+  font-size: 1.1rem;
+}
+.workstation-status {
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(100,116,139,0.18);
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+.workstation-status.online,
+.workstation-status.available {
+  color: #86efac;
+  background: rgba(16,185,129,0.14);
+}
+.workstation-status.busy {
+  color: #93c5fd;
+  background: rgba(59,130,246,0.14);
+}
+.workstation-status.maintenance {
+  color: #fde68a;
+  background: rgba(245,158,11,0.14);
+}
+.workstation-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.workstation-meta div {
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  background: rgba(15,23,42,0.52);
+  padding: 9px 10px;
+}
+.workstation-meta span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+.workstation-meta strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workstation-card p {
+  min-height: 42px;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+}
+.workstation-modal { max-width: 760px; }
+.cloud-connectivity-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(6,182,212,0.18);
+  border-radius: var(--radius-sm);
+  background: rgba(6,182,212,0.06);
+}
+.cloud-connectivity-row span {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
 /* ---- Buttons ---- */
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -332,6 +639,13 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 }
 .btn-primary { background: var(--accent); color: #000; }
 .btn-primary:hover { background: var(--accent-hover); }
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+  filter: grayscale(0.25);
+}
+.btn-primary:disabled:hover { background: var(--accent); }
+.btn-secondary:disabled:hover { background: var(--bg-tertiary); }
 .btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); }
 .btn-secondary:hover { background: var(--bg-hover); }
 .btn-danger { background: var(--color-blocked); color: #fff; }
@@ -2875,6 +3189,10 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
   .model-overview,
   .model-layout,
   .management-toolbar,
+  .client-hero,
+  .workstation-stats,
+  .agent-runtime-box,
+  .computer-management-options,
   .key-panel,
   .key-input-row,
   .task-management-row,

@@ -88,6 +88,8 @@ class AgentCreate(BaseModel):
     provider: str = Field(default="deepseek", max_length=50)
     max_iterations: int = Field(default=25, ge=1, le=100)
     model_name: str = Field(default="", max_length=100)
+    runtime_mode: str = Field(default="local_client", pattern="^(local_client|cloud_pool)$")
+    workstation_id: Optional[str] = Field(default=None, max_length=12)
 
 
 class AgentUpdate(BaseModel):
@@ -101,6 +103,8 @@ class AgentUpdate(BaseModel):
     provider: Optional[str] = Field(default=None, max_length=50)
     max_iterations: Optional[int] = Field(default=None, ge=1, le=100)
     model_name: Optional[str] = Field(default=None, max_length=100)
+    runtime_mode: Optional[str] = Field(default=None, pattern="^(local_client|cloud_pool)$")
+    workstation_id: Optional[str] = Field(default=None, max_length=12)
 
 
 class AgentResponse(BaseModel):
@@ -119,10 +123,86 @@ class AgentResponse(BaseModel):
     tool_count: int = 0
     employee_username: Optional[str] = None
     employee_init_password: Optional[str] = None
+    runtime_mode: str = "local_client"
+    workstation_id: Optional[str] = None
+    workstation_name: Optional[str] = None
+    workstation_kind: Optional[str] = None
+    workstation_status: Optional[str] = None
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
+
+
+# ---- Workstation ----
+class WorkstationCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    kind: str = Field(default="local", pattern="^(local|cloud)$")
+    status: str = Field(default="offline", pattern="^(offline|online|available|busy|maintenance)$")
+    host: str = Field(default="", max_length=200)
+    ip_address: str = Field(default="", max_length=80)
+    login_username: str = Field(default="", max_length=120)
+    login_password: Optional[str] = Field(default=None, max_length=400)
+    client_version: str = Field(default="", max_length=50)
+    notes: str = Field(default="", max_length=2000)
+
+
+class WorkstationUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    kind: Optional[str] = Field(default=None, pattern="^(local|cloud)$")
+    status: Optional[str] = Field(default=None, pattern="^(offline|online|available|busy|maintenance)$")
+    host: Optional[str] = Field(default=None, max_length=200)
+    ip_address: Optional[str] = Field(default=None, max_length=80)
+    login_username: Optional[str] = Field(default=None, max_length=120)
+    login_password: Optional[str] = Field(default=None, max_length=400)
+    client_version: Optional[str] = Field(default=None, max_length=50)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class WorkstationConnectivityRequest(BaseModel):
+    host: str = Field(default="", max_length=200)
+
+
+class WorkstationConnectivityResponse(BaseModel):
+    ok: bool
+    host: str
+    port: int
+    message: str
+
+
+class WorkstationResponse(BaseModel):
+    id: str
+    name: str
+    kind: str
+    status: str
+    host: str
+    ip_address: str
+    login_username: str
+    password_set: bool = False
+    client_version: str
+    bind_code: str
+    notes: str
+    assigned_agent_count: int = 0
+    last_seen_at: Optional[datetime]
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+class WorkstationClientBindRequest(BaseModel):
+    bind_code: str = Field(..., min_length=4, max_length=32)
+    machine_name: str = Field(default="", max_length=120)
+    ip_address: str = Field(default="", max_length=80)
+    client_version: str = Field(default="", max_length=50)
+    system_info: str = Field(default="", max_length=1000)
+
+
+class WorkstationClientBindResponse(BaseModel):
+    ok: bool = True
+    workstation_id: str
+    name: str
+    enterprise_id: str
 
 
 # ---- Department ----

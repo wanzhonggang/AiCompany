@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { beginGlobalLoading, getAgents, deleteAgent, createAgent, updateAgent, updateEmployeePassword, getLLMConfig, getDepartments, type Agent, type Department, type LLMConfig } from '../api/client'
+import { beginGlobalLoading, getAgents, deleteAgent, createAgent, updateAgent, updateEmployeePassword, getLLMConfig, getDepartments, getWorkstations, type Agent, type Department, type LLMConfig, type Workstation } from '../api/client'
 
 const AVATAR_COLORS = [
   "#6366f1","#8b5cf6","#06b6d4","#10b981","#f59e0b",
@@ -31,13 +31,25 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
   const [formColor, setFormColor] = useState(AVATAR_COLORS[0])
   const [formProvider, setFormProvider] = useState('')
   const [formModel, setFormModel] = useState('')
+  const [formRuntimeMode, setFormRuntimeMode] = useState<'local_client' | 'cloud_pool'>('local_client')
+  const [formWorkstationId, setFormWorkstationId] = useState('')
   const [llmConfig, setLLMConfig] = useState<LLMConfig | null>(null)
   const [departments, setDepartments] = useState<Department[]>([])
+  const [workstations, setWorkstations] = useState<Workstation[]>([])
 
   const availableProviders = (llmConfig?.providers || []).filter(p => p.configured && p.status === 'ready')
   const currentProvider = availableProviders.find(p => p.name === formProvider)
   const firstAvailableProvider = availableProviders[0]
   const defaultProviderAvailable = availableProviders.find(p => p.name === llmConfig?.default_provider)
+  const isSelectedByEditingAgent = (w: Workstation) => editing?.workstation_id === w.id
+  const isReadyWorkstation = (w: Workstation) => {
+    if (w.kind === 'local') return Boolean(w.last_seen_at) && w.status === 'online'
+    return w.status === 'available' || w.status === 'online'
+  }
+  const isFreeWorkstation = (w: Workstation) => w.assigned_agent_count === 0 || isSelectedByEditingAgent(w)
+  const usableLocalWorkstations = workstations.filter(w => w.kind === 'local' && isReadyWorkstation(w) && isFreeWorkstation(w))
+  const usableCloudWorkstations = workstations.filter(w => w.kind === 'cloud' && isReadyWorkstation(w) && isFreeWorkstation(w))
+  const selectableWorkstations = formRuntimeMode === 'cloud_pool' ? usableCloudWorkstations : usableLocalWorkstations
 
   const loadLLMConfig = useCallback(async () => {
     try {
@@ -52,9 +64,10 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
 
   const load = useCallback(async (showError = true) => {
     try {
-      const [agentData, departmentData] = await Promise.all([getAgents(), getDepartments()])
+      const [agentData, departmentData, workstationData] = await Promise.all([getAgents(), getDepartments(), getWorkstations()])
       setAgents(agentData)
       setDepartments(departmentData)
+      setWorkstations(workstationData)
     } catch {
       if (showError) showToast('加载失败', 'error')
     } finally {
@@ -70,12 +83,23 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
   }, [load, loadLLMConfig])
 
   const openCreate = () => {
+    if (availableProviders.length === 0) {
+      showToast('未配置可用模型，不可新增AI员工', 'error')
+      return
+    }
+    if (usableLocalWorkstations.length === 0 && usableCloudWorkstations.length === 0) {
+      showToast('没有已绑定或可用的工作电脑，不可新增AI员工', 'error')
+      return
+    }
     setEditing(null)
     setFormName(''); setFormRole(''); setFormDept('')
     setFormSkills(''); setFormPrompt('')
     const provider = defaultProviderAvailable || firstAvailableProvider
     setFormProvider(provider?.name || '')
     setFormModel(provider?.models[0]?.name || '')
+    const defaultMode = usableLocalWorkstations.length > 0 ? 'local_client' : 'cloud_pool'
+    setFormRuntimeMode(defaultMode)
+    setFormWorkstationId((defaultMode === 'local_client' ? usableLocalWorkstations[0] : usableCloudWorkstations[0])?.id || '')
     setFormColor(AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)])
     setShowForm(true)
   }
@@ -90,6 +114,8 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
     const model = provider?.models.find(m => m.name === a.model_name) || provider?.models[0]
     setFormProvider(provider?.name || '')
     setFormModel(model?.name || '')
+    setFormRuntimeMode(a.runtime_mode || 'local_client')
+    setFormWorkstationId(a.workstation_id || '')
     setShowForm(true)
   }
 
@@ -98,6 +124,10 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
     if (!formName.trim() || !formRole.trim()) return
     if (!formProvider || !formModel) {
       showToast('未选择模型，不可新增AI员工', 'error')
+      return
+    }
+    if (!formWorkstationId) {
+      showToast('未选择工作电脑，不可新增AI员工', 'error')
       return
     }
 
@@ -109,6 +139,8 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
           skills: formSkills.split(',').map(s => s.trim()).filter(Boolean),
           system_prompt: formPrompt, avatar_color: formColor,
           provider: formProvider, model_name: formModel,
+          runtime_mode: formRuntimeMode,
+          workstation_id: formWorkstationId || null,
         } as Partial<Agent>)
         showToast('员工信息已更新', 'success')
       } else {
@@ -117,6 +149,8 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
           skills: formSkills.split(',').map(s => s.trim()).filter(Boolean),
           system_prompt: formPrompt, avatar_color: formColor,
           provider: formProvider, model_name: formModel,
+          runtime_mode: formRuntimeMode,
+          workstation_id: formWorkstationId || null,
         } as Partial<Agent>)
         setPasswordAgent(created)
         setPasswordMode('initial')
@@ -221,6 +255,11 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
               <div className="card-role">{a.role}</div>
               <div className="card-dept">{a.department || '—'}</div>
               <div className="card-dept">账号：{a.employee_username || '未生成'}</div>
+              <div className="card-workstation">
+                <span>{a.runtime_mode === 'cloud_pool' ? '云电脑运行' : '客户端电脑'}</span>
+                <strong>{a.workstation_name || '未绑定工作电脑'}</strong>
+                {a.workstation_status && <em>{a.workstation_status}</em>}
+              </div>
               <span className={`status-badge status-${a.status}`}>
                 <span className="status-dot" />{STATUS_MAP[a.status] || a.status}
               </span>
@@ -304,6 +343,51 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
                     </select>
                   </div>
                 </div>
+                <div className="agent-runtime-box">
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 4 }}>运行方式</label>
+                    <div className="runtime-choice">
+                      <button
+                        type="button"
+                        className={formRuntimeMode === 'local_client' ? 'active' : ''}
+                        onClick={() => { setFormRuntimeMode('local_client'); setFormWorkstationId('') }}
+                      >
+                        客户端登录员工
+                      </button>
+                      <button
+                        type="button"
+                        className={formRuntimeMode === 'cloud_pool' ? 'active' : ''}
+                        onClick={() => { setFormRuntimeMode('cloud_pool'); setFormWorkstationId('') }}
+                      >
+                        云电脑运行
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: 4 }}>工作电脑</label>
+                    <select className="form-select" value={formWorkstationId} onChange={e => setFormWorkstationId(e.target.value)} required>
+                      {selectableWorkstations.length === 0 && <option value="">没有可用工作电脑</option>}
+                      {selectableWorkstations.length > 0 && <option value="">请选择工作电脑</option>}
+                      {selectableWorkstations.map(w => (
+                        <option key={w.id} value={w.id}>
+                          {w.name}（{w.status}，已绑定 {w.assigned_agent_count} 个员工）
+                        </option>
+                      ))}
+                    </select>
+                    <div className="task-meta" style={{ marginTop: 6 }}>
+                      {formRuntimeMode === 'cloud_pool'
+                        ? '没有客户本地电脑时，可从你提供的云电脑池选择一台给员工运行。'
+                        : '客户下载安装客户端并输入绑定码后，这里会出现对应本地电脑。'}
+                    </div>
+                    {selectableWorkstations.length === 0 && (
+                      <div className="form-help-error" style={{ marginTop: 8 }}>
+                        {formRuntimeMode === 'cloud_pool'
+                          ? '当前没有可分配或在线的云电脑，请先在“客户端下载”页面新增云电脑。'
+                          : '当前没有已完成客户端绑定的本地电脑。生成绑定码后，还需要客户电脑上的客户端连接成功。'}
+                      </div>
+                    )}
+                  </div>
+                </div>
                 {availableProviders.length === 0 && (
                   <div className="form-help-error">
                     当前企业未配置可用模型。请先进入「模型管理」填写并通过 API Key 校验后再创建 AI 员工。
@@ -323,7 +407,7 @@ export function Agents({ showToast }: { showToast: (msg: string, type: string) =
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
                   {availableProviders.length > 0 && <button type="button" className="btn btn-secondary" onClick={() => setShowForm(false)}>取消</button>}
-                  <button type="submit" className="btn btn-primary">{editing ? '保存修改' : '确认添加'}</button>
+                  <button type="submit" className="btn btn-primary" disabled={availableProviders.length === 0 || !formWorkstationId}>{editing ? '保存修改' : '确认添加'}</button>
                 </div>
               </div>
             </form>

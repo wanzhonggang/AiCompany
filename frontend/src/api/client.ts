@@ -91,9 +91,44 @@ export interface Agent {
   tool_count: number;
   employee_username: string | null;
   employee_init_password: string | null;
+  runtime_mode: 'local_client' | 'cloud_pool';
+  workstation_id: string | null;
+  workstation_name: string | null;
+  workstation_kind: 'local' | 'cloud' | null;
+  workstation_status: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
+
+export interface Workstation {
+  id: string;
+  name: string;
+  kind: 'local' | 'cloud';
+  status: 'offline' | 'online' | 'available' | 'busy' | 'maintenance';
+  host: string;
+  ip_address: string;
+  login_username: string;
+  password_set: boolean;
+  client_version: string;
+  bind_code: string;
+  notes: string;
+  assigned_agent_count: number;
+  last_seen_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export type WorkstationInput = {
+  name: string;
+  kind?: 'local' | 'cloud';
+  status?: 'offline' | 'online' | 'available' | 'busy' | 'maintenance';
+  host?: string;
+  ip_address?: string;
+  login_username?: string;
+  login_password?: string;
+  client_version?: string;
+  notes?: string;
+};
 
 export interface ProviderInfo {
   name: string;
@@ -421,6 +456,49 @@ export async function updateEmployeePassword(agentId: string, newPassword: strin
     body: JSON.stringify({ new_password: newPassword }),
   });
   return parseJsonResponse<{ ok: boolean; username?: string | null }>(r, '修改员工密码失败');
+}
+
+// ---- Workstations ----
+export async function getWorkstations(): Promise<Workstation[]> {
+  const r = await apiFetch(`${BASE}/workstations`);
+  return parseJsonResponse<Workstation[]>(r, '加载工作电脑失败');
+}
+
+export async function createWorkstation(data: WorkstationInput): Promise<Workstation> {
+  const r = await apiFetch(`${BASE}/workstations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<Workstation>(r, '新增工作电脑失败');
+}
+
+export async function updateWorkstation(id: string, data: Partial<WorkstationInput>): Promise<Workstation> {
+  const r = await apiFetch(`${BASE}/workstations/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<Workstation>(r, '修改工作电脑失败');
+}
+
+export async function regenerateWorkstationBindCode(id: string): Promise<Workstation> {
+  const r = await apiFetch(`${BASE}/workstations/${id}/bind-code`, { method: 'POST' });
+  return parseJsonResponse<Workstation>(r, '重新生成绑定码失败');
+}
+
+export async function testWorkstationConnectivity(data: { host?: string }): Promise<{ ok: boolean; host: string; port: number; message: string }> {
+  const r = await apiFetch(`${BASE}/workstations/test-connectivity`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseJsonResponse<{ ok: boolean; host: string; port: number; message: string }>(r, '测试云电脑连通性失败');
+}
+
+export async function deleteWorkstation(id: string): Promise<void> {
+  const r = await apiFetch(`${BASE}/workstations/${id}`, { method: 'DELETE' });
+  await parseJsonResponse<{ ok: boolean }>(r, '删除工作电脑失败');
 }
 
 // ---- Departments ----

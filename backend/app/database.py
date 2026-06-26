@@ -116,6 +116,10 @@ async def init_db():
                     "actor_agent_id": "ALTER TABLE operation_logs ADD COLUMN actor_agent_id VARCHAR(12)",
                     "actor_agent_name": "ALTER TABLE operation_logs ADD COLUMN actor_agent_name VARCHAR(100) DEFAULT ''",
                 },
+                "agents": {
+                    "runtime_mode": "ALTER TABLE agents ADD COLUMN runtime_mode VARCHAR(30) DEFAULT 'local_client'",
+                    "workstation_id": "ALTER TABLE agents ADD COLUMN workstation_id VARCHAR(12)",
+                },
             }
             for table, migrations in table_migrations.items():
                 result = await conn.execute(text(f"PRAGMA table_info({table})"))

@@ -132,6 +132,8 @@ class Agent(Base):
     provider = Column(String(50), default="deepseek")
     max_iterations = Column(Integer, default=25)
     model_name = Column(String(50), default="")
+    runtime_mode = Column(String(30), default="local_client")
+    workstation_id = Column(String(12), ForeignKey("workstations.id"), nullable=True)
     created_at = Column(DateTime, default=now_beijing)
     updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
 
@@ -141,6 +143,38 @@ class Agent(Base):
     profile = relationship("AgentProfile", back_populates="agent", cascade="all, delete-orphan", uselist=False)
     routines = relationship("AgentRoutine", back_populates="agent", cascade="all, delete-orphan")
     integrations = relationship("AgentIntegration", back_populates="agent", cascade="all, delete-orphan")
+    workstation = relationship("Workstation", foreign_keys=[workstation_id], back_populates="agents")
+
+
+class Workstation(Base):
+    __tablename__ = "workstations"
+
+    id = Column(String(12), primary_key=True, default=gen_id)
+    enterprise_id = Column(String(12), ForeignKey("enterprises.id"), nullable=False)
+    name = Column(String(120), nullable=False)
+    kind = Column(String(20), default="local")
+    status = Column(String(20), default="offline")
+    host = Column(String(200), default="")
+    ip_address = Column(String(80), default="")
+    login_username = Column(String(120), default="")
+    login_password = Column(Text, default="")
+    client_version = Column(String(50), default="")
+    bind_code = Column(String(32), default="")
+    notes = Column(Text, default="")
+    last_seen_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=now_beijing)
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing)
+
+    agents = relationship("Agent", foreign_keys="Agent.workstation_id", back_populates="workstation")
+
+    @validates("login_password")
+    def _encrypt_login_password(self, key: str, value: str) -> str:
+        if value and not value.startswith("gAAAAA"):
+            return encrypt_data(value)
+        return value
+
+    def set_login_password(self, value: str):
+        self.login_password = encrypt_data(value) if value else ""
 
 
 class Department(Base):
@@ -464,6 +498,9 @@ Index("idx_conversations_agent", Conversation.agent_id)
 Index("idx_operation_logs_enterprise", OperationLog.enterprise_id)
 Index("idx_operation_logs_created", OperationLog.created_at)
 Index("idx_departments_enterprise", Department.enterprise_id)
+Index("idx_workstations_enterprise", Workstation.enterprise_id)
+Index("idx_workstations_kind", Workstation.kind)
+Index("idx_agents_workstation", Agent.workstation_id)
 Index("idx_user_accounts_enterprise", UserAccount.enterprise_id)
 Index("idx_knowledge_bases_enterprise", KnowledgeBase.enterprise_id)
 Index("idx_knowledge_documents_base", KnowledgeDocument.knowledge_base_id)

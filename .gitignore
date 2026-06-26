@@ -11,3 +11,6 @@ backend/Desktop/
 frontend/node_modules/
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
+client/windows/build/
+client/windows/dist/
+*.spec

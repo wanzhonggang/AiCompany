@@ -11,7 +11,7 @@ from sqlalchemy import select
 from .auth import get_current_user, require_admin, hash_password
 from .config import get_providers_safe, load_llm_config, save_llm_config
 from .database import init_db, async_session, get_db
-from .routers import agents, chat, tools, tasks, departments, agent_memory, auth, admins, audit, knowledge, workflows, analytics
+from .routers import agents, chat, tools, tasks, departments, agent_memory, auth, admins, audit, knowledge, workflows, analytics, workstations, downloads
 from .middleware import RateLimitMiddleware, SecurityHeadersMiddleware
 from .models import Agent, AgentToolBinding, ToolDefinition, Enterprise, UserAccount, Department, EnterpriseLLMKey
 from .services import (
@@ -236,6 +236,8 @@ app.include_router(audit.router)
 app.include_router(knowledge.router)
 app.include_router(workflows.router)
 app.include_router(analytics.router)
+app.include_router(workstations.router)
+app.include_router(downloads.router)
 
 
 @app.get("/api/health")

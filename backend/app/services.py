@@ -1,5 +1,7 @@
 import json
 import re
+import socket
+import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, AsyncIterator
 from openai import AsyncOpenAI
@@ -18,6 +20,7 @@ from .models import (
     AgentProfile,
     AgentRoutine,
     AgentIntegration,
+    Workstation,
     UserAccount,
     EnterpriseLLMKey,
     OperationLog,
@@ -455,6 +458,64 @@ async def _validate_agent_model(db: AsyncSession, enterprise_id: str | None, pro
         raise ValueError("所选模型不属于该供应商")
 
 
+async def _validate_agent_workstation(
+    db: AsyncSession,
+    enterprise_id: str | None,
+    runtime_mode: str,
+    workstation_id: str | None,
+    ignore_agent_id: str | None = None,
+) -> None:
+    if not workstation_id:
+        raise ValueError("未选择工作电脑，不可新增AI员工")
+    workstation = await db.get(Workstation, workstation_id)
+    if not workstation or workstation.enterprise_id != enterprise_id:
+        raise ValueError("工作电脑不存在或不属于当前企业")
+    expected_kind = "cloud" if runtime_mode == "cloud_pool" else "local"
+    if workstation.kind != expected_kind:
+        raise ValueError("员工运行方式与所选工作电脑类型不匹配")
+    assigned_query = select(func.count(Agent.id)).where(Agent.workstation_id == workstation_id)
+    if ignore_agent_id:
+        assigned_query = assigned_query.where(Agent.id != ignore_agent_id)
+    assigned_count = (await db.execute(assigned_query)).scalar() or 0
+    if assigned_count > 0:
+        raise ValueError("这台工作电脑已经绑定了AI员工，请选择其他电脑")
+    if workstation.kind == "local" and not workstation.last_seen_at:
+        raise ValueError("本地电脑还没有完成客户端绑定，不可用于AI员工")
+    if workstation.kind == "cloud" and workstation.status not in {"available", "online"}:
+        raise ValueError("云电脑当前不可用，请选择可分配或在线的云电脑")
+    if workstation.kind == "cloud":
+        host, port = _parse_cloud_endpoint(workstation.host)
+        if not host:
+            raise ValueError("云电脑缺少可连接地址")
+        ok, message = await asyncio.to_thread(_check_cloud_connectivity, host, port)
+        if not ok:
+            raise ValueError(f"云电脑连通性校验失败：无法连接 {host}:{port}，{message}")
+
+
+def _parse_cloud_endpoint(host: str | None) -> tuple[str, int]:
+    value = (host or "").strip()
+    if not value:
+        return "", 3389
+    if "://" in value:
+        value = value.split("://", 1)[1]
+    value = value.split("/", 1)[0]
+    if ":" in value:
+        host_part, port_part = value.rsplit(":", 1)
+        try:
+            return host_part.strip(), int(port_part)
+        except ValueError:
+            return host_part.strip(), 3389
+    return value, 3389
+
+
+def _check_cloud_connectivity(host: str, port: int, timeout: float = 3.0) -> tuple[bool, str]:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, "ok"
+    except OSError as e:
+        return False, str(e)
+
+
 async def build_org_context(db: AsyncSession, current_agent: Agent) -> str:
     departments = await get_departments(db, enterprise_id=current_agent.enterprise_id)
     agents = await get_agents(db, enterprise_id=current_agent.enterprise_id)
@@ -467,6 +528,20 @@ async def build_org_context(db: AsyncSession, current_agent: Agent) -> str:
         f"你当前的身份是 {current_agent.name}，部门是 {current_agent.department or '未分配'}，职位是 {current_agent.role}。"
         "当任务需要其他员工或其他部门配合时，请明确指出需要对接的员工/部门、需要交付的信息和下一步动作。"
     )
+    workstation = await db.get(Workstation, current_agent.workstation_id) if current_agent.workstation_id else None
+    if workstation:
+        mode_label = "云电脑池" if current_agent.runtime_mode == "cloud_pool" else "本地客户端电脑"
+        lines.append(
+            "工作电脑绑定："
+            f"{mode_label} / {workstation.name} / 状态 {workstation.status} / "
+            f"地址 {workstation.host or workstation.ip_address or '未填写'}。"
+            "需要打开浏览器、操作文件、使用本机客户端时，必须在这台电脑上执行。"
+        )
+    else:
+        lines.append(
+            "工作电脑绑定：当前员工还没有绑定具体工作电脑。"
+            "如果任务需要浏览器、文件、客户端或桌面操作，先提示管理员绑定本地客户端电脑或云电脑。"
+        )
     memory_context = await build_agent_memory_context(db, current_agent)
     if memory_context:
         lines.append(memory_context)
@@ -876,6 +951,7 @@ async def create_agent(db: AsyncSession, data: AgentCreate, enterprise_id: Optio
     if not data.provider or not model_name:
         raise ValueError("未选择模型，不可新增AI员工")
     await _validate_agent_model(db, enterprise_id, data.provider, model_name)
+    await _validate_agent_workstation(db, enterprise_id, data.runtime_mode, data.workstation_id)
     await ensure_department(db, data.department, enterprise_id=enterprise_id)
     agent = Agent(
         enterprise_id=enterprise_id,
@@ -888,6 +964,8 @@ async def create_agent(db: AsyncSession, data: AgentCreate, enterprise_id: Optio
         provider=data.provider,
         max_iterations=data.max_iterations,
         model_name=model_name,
+        runtime_mode=data.runtime_mode,
+        workstation_id=data.workstation_id,
     )
     for tool in BUILTIN_TOOLS:
         agent.tool_bindings.append(AgentToolBinding(tool_name=tool.name, enabled=True))
@@ -925,8 +1003,12 @@ async def update_agent(db: AsyncSession, agent_id: str, data: AgentUpdate, enter
     update_data = data.model_dump(exclude_unset=True)
     next_provider = update_data.get("provider", agent.provider)
     next_model = update_data.get("model_name", agent.model_name)
+    next_runtime_mode = update_data.get("runtime_mode", agent.runtime_mode or "local_client")
+    next_workstation_id = update_data.get("workstation_id", agent.workstation_id)
     if "provider" in update_data or "model_name" in update_data:
         await _validate_agent_model(db, enterprise_id, next_provider, next_model)
+    if "runtime_mode" in update_data or "workstation_id" in update_data:
+        await _validate_agent_workstation(db, enterprise_id, next_runtime_mode, next_workstation_id, ignore_agent_id=agent.id)
     if "department" in update_data and update_data["department"] is not None:
         await ensure_department(db, update_data["department"], enterprise_id=enterprise_id)
     for key, value in update_data.items():
